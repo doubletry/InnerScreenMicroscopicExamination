@@ -282,8 +282,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         :param request_id: 请求ID（可选，不传则生成）
         """
         self._drain_ready_frames()
-        if len(self.results) >= self._get_max_pending_frames():
-            logger.warning(f"跳过待处理过多帧，当前待处理={len(self.results)}")
+        pending_frame_count = len(self.results)
+        if pending_frame_count >= self._get_max_pending_frames():
+            logger.warning(f"跳过待处理过多帧，当前待处理={pending_frame_count}")
             return None
 
         if request_id is None:

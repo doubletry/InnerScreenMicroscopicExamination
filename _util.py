@@ -124,14 +124,15 @@ def in_polygon(point, polygon_points):
     :param polygon_points: list[tuple]，多边形顶点坐标 [(x, y), ...]
     :return: list[np.ndarray]，过滤后的检测结果，格式与输入相同
     """
-    if len(polygon_points) == 2:
+    point_count = len(polygon_points)
+    if point_count == 2:
         # 两点模式 → 转换成矩形 Polygon
         (x1, y1), (x2, y2) = polygon_points
         xmin, xmax = min(x1, x2), max(x1, x2)
         ymin, ymax = min(y1, y2), max(y1, y2)
         return xmin <= point[0] <= xmax and ymin <= point[1] <= ymax
 
-    if len(polygon_points) < 3:
+    if point_count < 3:
         return False
 
     x, y = point
@@ -140,7 +141,7 @@ def in_polygon(point, polygon_points):
     for i, (xi, yi) in enumerate(polygon_points):
         xj, yj = polygon_points[j]
         intersects = (yi > y) != (yj > y)
-        if intersects:
+        if intersects and yj != yi:
             x_intersect = (xj - xi) * (y - yi) / (yj - yi) + xi
             if x < x_intersect:
                 inside = not inside
