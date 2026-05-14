@@ -116,7 +116,7 @@ class StateTracker:
         )
 
 
-def in_polygon(point, polygon_points):
+def in_polygon(point, polygon_points) -> bool:
     """
     过滤中心点在多边形内部的 YOLO 检测结果
 
@@ -142,7 +142,7 @@ def in_polygon(point, polygon_points):
         xj, yj = polygon_points[j]
         intersects = (yi > y) != (yj > y)
         denominator = yj - yi
-        if intersects and denominator != 0:
+        if intersects:
             x_intersect = xi + (xj - xi) * (y - yi) / denominator
             if x < x_intersect:
                 inside = not inside
