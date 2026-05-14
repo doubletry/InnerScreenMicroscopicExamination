@@ -34,7 +34,7 @@ IMAGE_MODEL_NAME = ""
 
 MOLD_DETECTION_MODEL_NAME = "上下模检测"
 ACTION_MODEL_NAME = "内屏镜检"
-INITIAL_SEQUENCE_ID = -1
+NO_FRAME_SEQUENCE_ID = -1
 
 TURBO_JPEG_DLL = get_path("dlls/libturbojpeg.dll")
 
@@ -194,7 +194,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._sequence_to_request_id = {}
         self._next_sequence_id = 0
         self._next_emit_sequence_id = 0
-        self._last_display_sequence_id = INITIAL_SEQUENCE_ID
+        self._last_display_sequence_id = NO_FRAME_SEQUENCE_ID
         self._action_request_id = []
         self._pending_action_requests = set()
 
@@ -287,7 +287,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         sequence_id = self._next_sequence_id
         self._next_sequence_id += 1
 
-        # Copy here because camera/video providers may reuse the input frame buffer.
+        # Keep a stable frame for upload/state; QImage display detaches its own copy later.
         frame_rgb_array = np.array(image, copy=True, order="C")
         self.results[request_id] = {
             "sequence_id": sequence_id,
@@ -659,7 +659,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         return QColor(0, 0, 255)
 
     def _should_emit_image(self, data, allow_same_sequence_update=False):
-        sequence_id = data.get("sequence_id", -1)
+        sequence_id = data.get("sequence_id", NO_FRAME_SEQUENCE_ID)
         if sequence_id < self._last_display_sequence_id:
             return False
         if (
