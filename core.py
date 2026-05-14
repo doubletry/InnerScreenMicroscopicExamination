@@ -56,7 +56,7 @@ def copy_stable_frame(image, max_attempts=5):
     copied shape, dtype, and pixels match the previous snapshot.
     """
     if max_attempts < 1:
-        raise ValueError("max_attempts must be at least 1")
+        raise ValueError("max_attempts must be a positive integer (at least 1)")
     previous = np.array(image, copy=True, order="C")
     # The first copy above counts as attempt 1; the loop performs the remaining
     # attempts until two adjacent snapshots are identical.
@@ -125,6 +125,9 @@ def save_segments(images, roi, root, sequence_indices=None):
     first_image = images[0] if images else None
     if first_image is None:
         logger.warning("保存片段失败：图像为空")
+        return
+    if first_image.ndim < 2:
+        logger.warning("保存片段失败：图像尺寸无效")
         return
 
     dirname = _clip_directory_name(sequence_indices)
