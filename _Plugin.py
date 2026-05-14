@@ -347,6 +347,8 @@ class Plugin(PluginBase):
             return
 
         request_id = self.client.handle_image(frame_data)
+        if request_id is None:
+            return
         self.request_id2relativetime_map[request_id] = timestamp
         pass
 

@@ -281,6 +281,11 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         :param image_encode: JPEG编码好的数据（可选）
         :param request_id: 请求ID（可选，不传则生成）
         """
+        self._drain_ready_frames()
+        if len(self.results) >= self._get_max_pending_frames():
+            logger.warning(f"跳过待处理过多帧，当前待处理={len(self.results)}")
+            return None
+
         if request_id is None:
             request_id = secrets.token_hex(4)
 
@@ -303,8 +308,6 @@ class InnerScreenMicroscopicExaminationClient(QObject):
                 "image_encode": image_encode,
             }
         )
-        # Keep the video live even while upload/detection responses are pending.
-        self._emit_raw_image(self.results[request_id])
         self._drain_ready_frames()
         return request_id
 
@@ -332,6 +335,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             return
 
         self.results[request_id]["detection"] = resp
+        self._emit_detection_image_if_latest(self.results[request_id])
         self._drain_ready_frames()
 
     def _get_response_timeout_ms(self):
@@ -339,6 +343,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
     def _get_max_drain_batch(self):
         return max(1, self._settings.value("max_drain_batch", 4, type=int))
+
+    def _get_max_pending_frames(self):
+        return max(1, self._settings.value("max_pending_frames", 12, type=int))
 
     def _is_frame_ready(self, data):
         return "upload" in data and "detection" in data
@@ -620,7 +627,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         }
 
         self.resultsReady.emit({"request_id": request_id, "resp": data})
-        self._emit_annotated_image_if_current(
+        self._emit_detection_image_if_latest(
             data, mold_color=mold_color, action_color=action_color
         )
 
@@ -658,29 +665,20 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             return QColor(0, 255, 0)
         return QColor(0, 0, 255)
 
-    def _should_emit_image(self, data, allow_same_sequence_update=False):
+    def _should_emit_image(self, data):
         sequence_id = data.get("sequence_id", NO_FRAME_SEQUENCE_ID)
         if sequence_id < self._last_display_sequence_id:
             return False
-        if (
-            sequence_id == self._last_display_sequence_id
-            and not allow_same_sequence_update
-        ):
+        if sequence_id == self._last_display_sequence_id:
             return False
         self._last_display_sequence_id = sequence_id
         return True
 
-    def _emit_raw_image(self, data):
-        if not self._should_emit_image(data):
-            return
-        self.imageReady.emit(self._image_to_qimage(data["image"]))
-
-    def _emit_annotated_image_if_current(self, data, mold_color=None, action_color=None):
+    def _emit_detection_image_if_latest(self, data, mold_color=None, action_color=None):
         if data.get("annotated_image_emitted"):
             return
 
-        # Annotated frames may update the display once for the same sequence after its raw preview.
-        if not self._should_emit_image(data, allow_same_sequence_update=True):
+        if not self._should_emit_image(data):
             return
 
         detection_resp = data.get("detection")

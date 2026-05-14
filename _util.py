@@ -6,7 +6,6 @@ import cv2
 import numpy as np
 from hummingbirdai.logger_config import logger
 from PySide6.QtCore import QObject, QThread, Signal, Slot
-from shapely.geometry import Point, Polygon
 
 
 class ResultState(IntEnum):
@@ -130,11 +129,24 @@ def in_polygon(point, polygon_points):
         (x1, y1), (x2, y2) = polygon_points
         xmin, xmax = min(x1, x2), max(x1, x2)
         ymin, ymax = min(y1, y2), max(y1, y2)
-        polygon_points = [(xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)]
+        return xmin <= point[0] <= xmax and ymin <= point[1] <= ymax
 
-    poly = Polygon(polygon_points)
-    center_point = Point(point[0], point[1])
-    return poly.contains(center_point)
+    if len(polygon_points) < 3:
+        return False
+
+    x, y = point
+    inside = False
+    j = len(polygon_points) - 1
+    for i, (xi, yi) in enumerate(polygon_points):
+        xj, yj = polygon_points[j]
+        intersects = (yi > y) != (yj > y)
+        if intersects:
+            x_intersect = (xj - xi) * (y - yi) / (yj - yi) + xi
+            if x < x_intersect:
+                inside = not inside
+        j = i
+
+    return inside
 
 
 def get_package_name():
