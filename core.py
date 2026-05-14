@@ -608,9 +608,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         contiguous = np.ascontiguousarray(frame_rgb)
         h, w, ch = contiguous.shape
         bytes_per_line = ch * w
-        qimg = QImage(
-            contiguous.tobytes(), w, h, bytes_per_line, QImage.Format_RGB888
-        )
+        # 显式保留 bytes 引用，避免 QImage 仍在使用时被 GC 回收。
+        buffer = contiguous.tobytes()
+        qimg = QImage(buffer, w, h, bytes_per_line, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(qimg)
 
         painter = QPainter(pixmap)
