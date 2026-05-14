@@ -677,7 +677,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         if data.get("annotated_image_emitted"):
             return
 
-        # Allow the annotated result to replace the raw preview for this same frame.
+        # Track annotated emission separately so it can replace the raw preview once.
         if not self._should_emit_image(data, allow_same_sequence_update=True):
             return
 
@@ -727,7 +727,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         qimage = QImage(
             contiguous_frame.data, w, h, bytes_per_line, QImage.Format_RGB888
         )
-        # Detach from the numpy buffer; upstream video frames can be reused.
+        # Detach from the numpy buffer to prevent corruption when frames are reused or deallocated.
         return qimage.copy()
 
     def draw_detection_on_image(self, frame_rgb, result, color):
