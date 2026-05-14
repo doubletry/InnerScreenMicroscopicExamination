@@ -56,12 +56,12 @@ def copy_stable_frame(image, max_attempts=5):
     copied shape, dtype, and pixels match the previous snapshot.
     """
     if max_attempts < 1:
-        max_attempts = 1
-    previous = np.ascontiguousarray(image).copy()
+        raise ValueError("max_attempts must be at least 1")
+    previous = np.array(image, copy=True, order="C")
     # The first copy above counts as attempt 1; the loop performs the remaining
     # attempts until two adjacent snapshots are identical.
     for _ in range(max_attempts - 1):
-        current = np.ascontiguousarray(image).copy()
+        current = np.array(image, copy=True, order="C")
         if (
             current.shape == previous.shape
             and current.dtype == previous.dtype
@@ -316,6 +316,8 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             self._save_segments_threading.join(
                 timeout=SAVE_THREAD_JOIN_TIMEOUT_SECONDS
             )
+            # Do not block plugin shutdown indefinitely; if saving is still busy,
+            # leave the worker to finish its current item and warn for diagnostics.
             if self._save_segments_threading.is_alive():
                 logger.warning("保存结果线程未在超时时间内退出")
         self._save_segments_threading = None
