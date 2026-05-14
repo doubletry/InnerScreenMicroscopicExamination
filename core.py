@@ -169,7 +169,6 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._pending_action_requests = set()
         self._current_action = ResultState.PENDING
         self._is_draining = False
-        self._last_display_sequence_id = -1
         self._reset_frame_tracking_state()
 
         self._action_state_tracker = StateTracker()
@@ -656,9 +655,11 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             return QColor(0, 255, 0)
         return QColor(0, 0, 255)
 
-    def _should_emit_image(self, data):
+    def _should_emit_image(self, data, allow_same_sequence=False):
         sequence_id = data.get("sequence_id", -1)
         if sequence_id < self._last_display_sequence_id:
+            return False
+        if sequence_id == self._last_display_sequence_id and not allow_same_sequence:
             return False
         self._last_display_sequence_id = sequence_id
         return True
@@ -672,7 +673,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         if data.get("annotated_image_emitted"):
             return
 
-        if not self._should_emit_image(data):
+        if not self._should_emit_image(data, allow_same_sequence=True):
             return
 
         detection_resp = data.get("detection")
@@ -717,7 +718,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
     def _image_to_qimage(self, frame_rgb):
         frame_rgb = np.ascontiguousarray(frame_rgb)
         h, w, ch = frame_rgb.shape
-        bytes_per_line = frame_rgb.strides[0]
+        bytes_per_line = w * ch
         return QImage(
             frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888
         ).copy()
