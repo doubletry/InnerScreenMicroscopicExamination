@@ -168,12 +168,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._action_request_id = []
         self._pending_action_stats = set()
         self._current_action = ResultState.PENDING
-
-        self._next_sequence_id = 0
-        self._next_emit_sequence_id = 0
-        self._sequence_to_request_id = {}
         self._max_drain_batch = 4
         self._is_draining = False
+        self._reset_frame_tracking_state()
 
         self._action_state_tracker = StateTracker()
         self._action_state = None
@@ -189,6 +186,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
     def clear_image_queue(self):
 
         self.results = OrderedDict()
+        self._reset_frame_tracking_state()
+
+    def _reset_frame_tracking_state(self):
         self._upload_image_keys = []
         self._upload_image_list = []
         self._sequence_to_request_id = {}
@@ -271,11 +271,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self.threads.clear()
 
         self.image_queue.put(None)
-        self._upload_image_keys = []
-        self._upload_image_list = []
-        self._sequence_to_request_id = {}
-        self._action_request_id = []
-        self._pending_action_stats = set()
+        self._reset_frame_tracking_state()
 
     def handle_image(self, image, image_encode=None, request_id=None):
         """
@@ -537,6 +533,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
         detection_resp = data["detection"]
         if not detection_resp.results:
+            logger.warning(f"跳过无检测结果帧 request_id={request_id}")
             return
 
         # 过滤上下模区域内的物体
@@ -603,13 +600,10 @@ class InnerScreenMicroscopicExaminationClient(QObject):
                     else ResultState.PENDING
                 )
 
+                self._total_count += 1
                 if action_result == ResultState.OK:
                     self._ok_count += 1
-                    self._total_count += 1
-                elif action_result == ResultState.NG:
-                    self._total_count += 1
-                else:
-                    self._total_count += 1
+                elif action_result != ResultState.NG:
                     logger.warning(f"未获取到动作结果，当前动作结果None")
 
                 logger.info(
