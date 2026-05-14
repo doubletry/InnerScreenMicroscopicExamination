@@ -393,6 +393,10 @@ class Plugin(PluginBase):
         if not self.start_action.isChecked():
             return
 
+        # 视频解码线程可能复用同一块缓冲区，必须在进入插槽的第一时间整帧拷贝，
+        # 避免后续处理过程中读到“半新半旧”的画面（即拼接现象）。
+        frame_data = np.ascontiguousarray(frame_data).copy()
+
         if get_v_channel_brightness(frame_data) < self.settings.value(
             "brighten_conf", 64, type=int
         ):  # 如果画面过暗，可能是视频结束的黑屏，直接返回不处理

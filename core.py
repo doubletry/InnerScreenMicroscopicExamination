@@ -252,21 +252,30 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         if request_id is None:
             request_id = secrets.token_hex(4)
 
-        # Detach from the video/player buffer, which may be reused after this call.
-        frame = np.array(image, copy=True, order="C")
+        # 即使调用方已经拷贝过，这里再用 ndarray.copy() 做一次受控的、独立缓冲的拷贝，
+        # 保证 FrameRecord 持有的图像与上传客户端持有的图像彼此完全独立，
+        # 避免任意一方在后台线程修改/编码图像时影响到显示与保存。
+        source = np.ascontiguousarray(image)
+        record_frame = source.copy()
+        upload_frame = source.copy()
+
         sequence_index = self._next_sequence_index
         self._next_sequence_index += 1
 
         self.results[request_id] = FrameRecord(
             request_id=request_id,
             sequence_index=sequence_index,
-            image=frame,
+            image=record_frame,
             created_at=time.time(),
         )
         self._sequence_to_request_id[sequence_index] = request_id
 
         self.upload_image_client.add_input_item(
-            {"request_id": request_id, "image": frame, "image_encode": image_encode}
+            {
+                "request_id": request_id,
+                "image": upload_frame,
+                "image_encode": image_encode,
+            }
         )
         return request_id
 
@@ -371,11 +380,13 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         if record.upload_key is None:
             return
 
+        # 立即对 record.image 做独立拷贝。FrameRecord 在 _try_emit 之后会被丢弃，
+        # 而片段需要在动作识别返回 / 保存线程消费完之前一直存在，必须断开与 FrameRecord 的共享。
         self._current_clip.append(
             {
                 "sequence_index": record.sequence_index,
                 "key": record.upload_key,
-                "image": record.image,
+                "image": np.ascontiguousarray(record.image).copy(),
                 "roi": list(material_area),
             }
         )
@@ -384,6 +395,8 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             self._current_clip = self._current_clip[-clip_length:]
 
     def _submit_action_clip(self, record: FrameRecord, material_area):
+        # _current_clip 已按 sequence_index 顺序追加（由 _drain_ready_detection_results 保证），
+        # 这里再次按 sequence_index 排序作为防御，确保保存的 0.jpg, 1.jpg, ... 与采集顺序一致。
         clip = sorted(self._current_clip, key=lambda item: item["sequence_index"])
         keys = [item["key"] for item in clip]
         rois = [item["roi"] or list(material_area) for item in clip]
@@ -400,10 +413,13 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
             if self._settings.value("save_clip", False, type=bool):
                 try:
-                    # The saver runs on a background thread, so hand it independent arrays.
+                    # 每张图像都用独立缓冲传给保存线程，避免后续帧的写入产生拼接。
+                    saver_images = [
+                        np.ascontiguousarray(item["image"]).copy() for item in clip
+                    ]
                     self.image_queue.put_nowait(
                         {
-                            "images": [item["image"].copy() for item in clip],
+                            "images": saver_images,
                             "roi": list(material_area),
                         }
                     )
@@ -586,11 +602,15 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         return pixmap
 
     def draw_detection_on_image(self, frame_rgb, result, color):
-        frame = np.ascontiguousarray(frame_rgb)
-        h, w, ch = frame.shape
+        # 用 tobytes() 生成一个不可变的 Python bytes 对象作为 QImage 的底层缓冲，
+        # 这样 QImage / QPixmap 完全脱离原始 numpy 数组的内存。即便后续帧覆盖了
+        # 原始缓冲，本次绘制出来的画面也不会被污染（避免显示画面拼接）。
+        contiguous = np.ascontiguousarray(frame_rgb)
+        h, w, ch = contiguous.shape
         bytes_per_line = ch * w
-        # QImage wraps the NumPy buffer, so copy it before the local array is released.
-        qimg = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
+        qimg = QImage(
+            contiguous.tobytes(), w, h, bytes_per_line, QImage.Format_RGB888
+        )
         pixmap = QPixmap.fromImage(qimg)
 
         painter = QPainter(pixmap)
