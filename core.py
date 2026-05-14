@@ -60,7 +60,7 @@ def copy_stable_frame(image, max_attempts=5):
         ):
             return current
         previous = current
-    return previous.copy()
+    return previous
 
 
 def get_machine_unique_id():
@@ -101,7 +101,10 @@ def generate_random_str(length=10):
 def _clip_dirname(sequence_indices):
     random_suffix = generate_random_str(6)
     if sequence_indices is not None and len(sequence_indices) > 0:
-        return f"{sequence_indices[0]:06d}_{sequence_indices[-1]:06d}_{random_suffix}"
+        return (
+            f"seq{sequence_indices[0]:06d}_"
+            f"seq{sequence_indices[-1]:06d}_{random_suffix}"
+        )
     return f"{int(time.time() * 1000)}_{random_suffix}"
 
 
@@ -304,6 +307,8 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             self._save_segments_threading.join(
                 timeout=SAVE_THREAD_JOIN_TIMEOUT_SECONDS
             )
+            if self._save_segments_threading.is_alive():
+                logger.warning("保存结果线程未在超时时间内退出")
         self._save_segments_threading = None
         with self._state_lock:
             self._reset_runtime_state(reset_counts=False)
