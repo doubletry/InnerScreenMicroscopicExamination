@@ -286,6 +286,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         sequence_id = self._next_sequence_id
         self._next_sequence_id += 1
 
+        # Copy here because camera/video providers may reuse the input frame buffer.
         frame_rgb_array = np.array(image, copy=True, order="C")
         self.results[request_id] = {
             "sequence_id": sequence_id,
@@ -676,6 +677,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         if data.get("annotated_image_emitted"):
             return
 
+        # Allow the annotated result to replace the raw preview for this same frame.
         if not self._should_emit_image(data, allow_same_sequence_update=True):
             return
 
@@ -719,11 +721,11 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         return image
 
     def _image_to_qimage(self, frame_rgb):
-        frame_rgb = np.ascontiguousarray(frame_rgb)
-        h, w, ch = frame_rgb.shape
+        contiguous_frame = np.ascontiguousarray(frame_rgb)
+        h, w, ch = contiguous_frame.shape
         bytes_per_line = w * ch
         qimage = QImage(
-            frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888
+            contiguous_frame.data, w, h, bytes_per_line, QImage.Format_RGB888
         )
         # Detach from the numpy buffer; upstream video frames can be reused.
         return qimage.copy()
