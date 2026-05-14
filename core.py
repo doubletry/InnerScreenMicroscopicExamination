@@ -48,9 +48,18 @@ class FrameRecord:
 
 
 def copy_stable_frame(image, max_attempts=5):
+    """
+    Copy a frame only after two consecutive snapshots are identical.
+
+    Some video producers reuse and overwrite the same ndarray buffer from another
+    thread. A single copy can catch that buffer mid-write, so retry until the
+    copied shape, dtype, and pixels match the previous snapshot.
+    """
     if max_attempts < 1:
         max_attempts = 1
     previous = np.ascontiguousarray(image).copy()
+    # The first copy above counts as attempt 1; the loop performs the remaining
+    # attempts until two adjacent snapshots are identical.
     for _ in range(max_attempts - 1):
         current = np.ascontiguousarray(image).copy()
         if (
@@ -98,7 +107,7 @@ def generate_random_str(length=10):
     return "".join(random.sample(chars, length))
 
 
-def _clip_dirname(sequence_indices):
+def _clip_directory_name(sequence_indices):
     random_suffix = generate_random_str(6)
     if sequence_indices is not None and len(sequence_indices) > 0:
         return (
@@ -113,7 +122,7 @@ def save_segments(images, roi, root, sequence_indices=None):
         logger.warning("保存片段失败：未配置有效物料区域")
         return
 
-    dirname = _clip_dirname(sequence_indices)
+    dirname = _clip_directory_name(sequence_indices)
     full_dirname = osp.join(root, dirname)
     os.makedirs(full_dirname, exist_ok=True)
 
@@ -128,7 +137,7 @@ def save_segments(images, roi, root, sequence_indices=None):
     ymin = max(0, min(roi[0][1], roi[1][1]))
     ymax = min(height, max(roi[0][1], roi[1][1]))
     if xmin >= xmax or ymin >= ymax:
-        logger.warning("保存片段失败：物料区域超出图像范围")
+        logger.warning("保存片段失败：物料区域无效或为空")
         return
 
     for i, image in enumerate(images):
