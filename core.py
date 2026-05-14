@@ -286,18 +286,18 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         sequence_id = self._next_sequence_id
         self._next_sequence_id += 1
 
-        frame_image = np.array(image, copy=True, order="C")
+        frame_rgb_array = np.array(image, copy=True, order="C")
         self.results[request_id] = {
             "sequence_id": sequence_id,
             "created_at_ms": time.monotonic() * 1000,
-            "image": frame_image,
+            "image": frame_rgb_array,
         }
         self._sequence_to_request_id[sequence_id] = request_id
 
         self.upload_image_client.add_input_item(
             {
                 "request_id": request_id,
-                "image": frame_image,
+                "image": frame_rgb_array,
                 "image_encode": image_encode,
             }
         )
@@ -655,11 +655,14 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             return QColor(0, 255, 0)
         return QColor(0, 0, 255)
 
-    def _should_emit_image(self, data, allow_same_sequence=False):
+    def _should_emit_image(self, data, allow_same_sequence_update=False):
         sequence_id = data.get("sequence_id", -1)
         if sequence_id < self._last_display_sequence_id:
             return False
-        if sequence_id == self._last_display_sequence_id and not allow_same_sequence:
+        if (
+            sequence_id == self._last_display_sequence_id
+            and not allow_same_sequence_update
+        ):
             return False
         self._last_display_sequence_id = sequence_id
         return True
@@ -673,7 +676,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         if data.get("annotated_image_emitted"):
             return
 
-        if not self._should_emit_image(data, allow_same_sequence=True):
+        if not self._should_emit_image(data, allow_same_sequence_update=True):
             return
 
         detection_resp = data.get("detection")
@@ -719,9 +722,11 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         frame_rgb = np.ascontiguousarray(frame_rgb)
         h, w, ch = frame_rgb.shape
         bytes_per_line = w * ch
-        return QImage(
+        qimage = QImage(
             frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888
-        ).copy()
+        )
+        # Detach from the numpy buffer; upstream video frames can be reused.
+        return qimage.copy()
 
     def draw_detection_on_image(self, frame_rgb, result, color):
 

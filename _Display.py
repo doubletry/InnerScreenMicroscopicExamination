@@ -129,6 +129,7 @@ class DisplayWidget(QWidget):
             if isinstance(image, QImage):
                 pixmap = QPixmap.fromImage(image)
             else:
+                # Compatibility for any queued QPixmap emitted before the QImage migration.
                 pixmap = image
 
             # scaled_pixmap = pixmap.scaled(
