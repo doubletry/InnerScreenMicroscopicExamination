@@ -26,6 +26,8 @@ class SidebarStatusWidget(QWidget):
         self.total_count = 0
         self.ok_count = 0
         self.ng_count = 0
+        self._status_cache = {}
+        self._pixmap_cache = {}
 
         self._init_ui()
         self._update_stats_labels()
@@ -248,15 +250,22 @@ class SidebarStatusWidget(QWidget):
         根据 OK/NG 设置图标和文字颜色。
         当前用纯色方块模拟图标，你可以替换为实际 PNG/SVG 图标。
         """
+        if self._status_cache.get(status_label) == status:
+            return
+        self._status_cache[status_label] = status
+
         if status == ResultState.OK:
             status_text = "OK"
             color = QColor("#4CAF50")  # 绿
+            color_key = "ok"
         elif status == ResultState.NG:
             status_text = "NG"
             color = QColor("#F44336")  # 红
+            color_key = "ng"
         else:
             status_text = "PENDING"
             color = QColor("#9E9E9E")  # 灰
+            color_key = "pending"
 
         status_label.setText(status_text)
 
@@ -265,8 +274,11 @@ class SidebarStatusWidget(QWidget):
         status_label.setPalette(palette)
 
         # 简单的纯色块图标，有实际图标时可以替换为 QPixmap("ok.png") 等
-        pix = QPixmap(40, 40)
-        pix.fill(color)
+        pix = self._pixmap_cache.get(color_key)
+        if pix is None:
+            pix = QPixmap(40, 40)
+            pix.fill(color)
+            self._pixmap_cache[color_key] = pix
         icon_label.setPixmap(pix)
 
     # ===================== 统计信息接口（外部设置总数和OK数） =====================

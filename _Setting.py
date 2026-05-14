@@ -107,6 +107,19 @@ class ConfigurationPanel(QWidget):
         )
         param_configuration_group_layout.addRow("画面亮度阈值：", brighten_conf)
 
+        response_timeout_ms = QSpinBox()
+        response_timeout_ms.setObjectName("response_timeout_ms")
+        response_timeout_ms.setRange(1, 10000)
+        response_timeout_ms.setValue(
+            self.load_setting(response_timeout_ms.objectName(), 500, int)
+        )
+        response_timeout_ms.valueChanged.connect(
+            lambda value: self.save_setting(response_timeout_ms.objectName(), value)
+        )
+        param_configuration_group_layout.addRow(
+            "响应超时跳帧(ms)：", response_timeout_ms
+        )
+
         save_clip_checkbox = QCheckBox()
         save_clip_checkbox.setObjectName("save_clip")
         save_clip_checkbox.setChecked(
