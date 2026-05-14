@@ -207,8 +207,8 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._state_lock = threading.RLock()
 
     def clear_image_queue(self):
-        self._clear_pending_image_queue(keep_stop_signal=True)
         with self._state_lock:
+            self._clear_pending_image_queue(keep_stop_signal=True)
             self._reset_runtime_state(reset_counts=True)
 
     def _clear_pending_image_queue(self, keep_stop_signal=False):
@@ -291,7 +291,8 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._start_client_thread(self.mold_detection_client)
         self._start_client_thread(self.action_client)
 
-        self._clear_pending_image_queue()
+        with self._state_lock:
+            self._clear_pending_image_queue()
         self._save_segments_threading = threading.Thread(
             target=backend_save_segments,
             args=(self.image_queue, osp.join(current_dir, "history")),
@@ -315,7 +316,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self.threads.clear()
 
         self.image_queue.put(None)
-        if self._save_segments_threading and self._save_segments_threading.is_alive():
+        if self._save_segments_threading:
             self._save_segments_threading.join(
                 timeout=SAVE_THREAD_JOIN_TIMEOUT_SECONDS
             )
