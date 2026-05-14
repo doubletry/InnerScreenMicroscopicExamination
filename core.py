@@ -41,6 +41,7 @@ class FrameRecord:
     upload_resp: Any = None
     upload_key: str | None = None
     detection_resp: Any = None
+    detection_processed: bool = False
     action_resp: Any = None
     action_requested: bool = False
 
@@ -80,7 +81,7 @@ def generate_random_str(length=10):
     return "".join(random.sample(chars, length))
 
 
-def save_segments(images, roi, root):
+def save_segments(images, roi, root, sequence_indices=None):
     if len(roi) < 2:
         logger.warning("保存片段失败：未配置有效物料区域")
         return
@@ -95,7 +96,12 @@ def save_segments(images, roi, root):
     ymax = max(roi[0][1], roi[1][1])
 
     for i, image in enumerate(images):
-        image_path = osp.join(full_dirname, f"{i}.jpg")
+        sequence_index = (
+            sequence_indices[i]
+            if sequence_indices is not None and i < len(sequence_indices)
+            else i
+        )
+        image_path = osp.join(full_dirname, f"{sequence_index:06d}.jpg")
         image_bgr = cv2.cvtColor(np.ascontiguousarray(image), cv2.COLOR_RGB2BGR)
         crop = np.ascontiguousarray(image_bgr[ymin:ymax, xmin:xmax])
         cv2.imwrite(image_path, crop)
@@ -116,8 +122,9 @@ def backend_save_segments(image_queue: queue.Queue, root):
 
         images = data["images"]
         roi = data["roi"]
+        sequence_indices = data.get("sequence_indices")
         logger.debug(f"获取到分割图片，共{len(images)}张")
-        save_segments(images, roi, root)
+        save_segments(images, roi, root, sequence_indices)
 
     logger.info("退出保存结果线程")
 
@@ -140,6 +147,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._sequence_to_request_id: OrderedDict[int, str] = OrderedDict()
         self._next_sequence_index = 0
         self._next_detection_sequence = 0
+        self._next_emit_sequence = 0
         self._current_clip: list[dict] = []
         self._action_request_id = []
         self._current_action = ResultState.PENDING
@@ -150,15 +158,18 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._state_tracker = StateTracker()
         self._action_result_queue = []
         self._mold_status = ResultState.PENDING
+        self._state_lock = threading.RLock()
 
     def clear_image_queue(self):
-        self._reset_runtime_state(reset_counts=True)
+        with self._state_lock:
+            self._reset_runtime_state(reset_counts=True)
 
     def _reset_runtime_state(self, reset_counts=False):
         self.results = OrderedDict()
         self._sequence_to_request_id = OrderedDict()
         self._next_sequence_index = 0
         self._next_detection_sequence = 0
+        self._next_emit_sequence = 0
         self._current_clip = []
         self._action_request_id = []
         self._current_action = ResultState.PENDING
@@ -246,69 +257,76 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self.threads.clear()
 
         self.image_queue.put(None)
-        self._reset_runtime_state(reset_counts=False)
+        with self._state_lock:
+            self._reset_runtime_state(reset_counts=False)
 
     def handle_image(self, image, image_encode=None, request_id=None):
-        if request_id is None:
-            request_id = secrets.token_hex(4)
+        with self._state_lock:
+            if request_id is None:
+                request_id = secrets.token_hex(4)
 
-        # 即使调用方已经拷贝过，这里再用 ndarray.copy() 做一次受控的、独立缓冲的拷贝，
-        # 保证 FrameRecord 持有的图像与上传客户端持有的图像彼此完全独立，
-        # 避免任意一方在后台线程修改/编码图像时影响到显示与保存。
-        source = np.ascontiguousarray(image)
-        record_frame = source.copy()
-        upload_frame = source.copy()
+            # 即使调用方已经拷贝过，这里再用 ndarray.copy() 做一次受控的、独立缓冲的拷贝，
+            # 保证 FrameRecord 持有的图像与上传客户端持有的图像彼此完全独立，
+            # 避免任意一方在后台线程修改/编码图像时影响到显示与保存。
+            source = np.ascontiguousarray(image)
+            record_frame = source.copy()
+            upload_frame = source.copy()
 
-        sequence_index = self._next_sequence_index
-        self._next_sequence_index += 1
+            sequence_index = self._next_sequence_index
+            self._next_sequence_index += 1
 
-        self.results[request_id] = FrameRecord(
-            request_id=request_id,
-            sequence_index=sequence_index,
-            image=record_frame,
-            created_at=time.time(),
-        )
-        self._sequence_to_request_id[sequence_index] = request_id
+            self.results[request_id] = FrameRecord(
+                request_id=request_id,
+                sequence_index=sequence_index,
+                image=record_frame,
+                created_at=time.time(),
+            )
+            self._sequence_to_request_id[sequence_index] = request_id
 
-        self.upload_image_client.add_input_item(
-            {
-                "request_id": request_id,
-                "image": upload_frame,
-                "image_encode": image_encode,
-            }
-        )
-        return request_id
+            self.upload_image_client.add_input_item(
+                {
+                    "request_id": request_id,
+                    "image": upload_frame,
+                    "image_encode": image_encode,
+                }
+            )
+            return request_id
 
     @Slot(object, object)
     def _on_image_result(self, request_id, resp):
-        record = self.results.get(request_id)
-        if not record:
-            logger.warning(f"收到未知或已丢弃的上传结果：{request_id}")
-            return
+        with self._state_lock:
+            record = self.results.get(request_id)
+            if not record:
+                logger.warning(f"收到未知或已丢弃的上传结果：{request_id}")
+                return
 
-        key = self._extract_upload_key(resp)
-        if key is None:
-            logger.warning(f"上传结果缺少图像key：{request_id}")
-            self._drop_record(record, "upload key missing")
+            key = self._extract_upload_key(resp)
+            if key is None:
+                logger.warning(f"上传结果缺少图像key：{request_id}")
+                self._drop_record(record, "upload key missing")
+                self._drain_ready_detection_results()
+                self._drain_ready_outputs()
+                return
+
+            record.upload_resp = resp
+            record.upload_key = key
+            self.mold_detection_client.add_input_item(
+                {"request_id": request_id, "image": None, "key": [key]}
+            )
             self._drain_ready_detection_results()
-            return
-
-        record.upload_resp = resp
-        record.upload_key = key
-        self.mold_detection_client.add_input_item(
-            {"request_id": request_id, "image": None, "key": [key]}
-        )
-        self._drain_ready_detection_results()
+            self._drain_ready_outputs()
 
     @Slot(object, object)
     def on_mold_detection(self, request_id, resp):
-        record = self.results.get(request_id)
-        if not record:
-            logger.warning(f"收到未知或已丢弃的检测结果：{request_id}")
-            return
+        with self._state_lock:
+            record = self.results.get(request_id)
+            if not record:
+                logger.warning(f"收到未知或已丢弃的检测结果：{request_id}")
+                return
 
-        record.detection_resp = resp
-        self._drain_ready_detection_results()
+            record.detection_resp = resp
+            self._drain_ready_detection_results()
+            self._drain_ready_outputs()
 
     def _extract_upload_key(self, resp):
         cache_metas = getattr(resp, "cache_metas", None)
@@ -374,7 +392,8 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         elif self._action_state == ObjectState.DISAPPEARING:
             self._submit_action_clip(record, material_area)
 
-        self._try_emit(record.request_id)
+        record.detection_processed = True
+        self._drain_ready_outputs()
 
     def _append_action_clip(self, record: FrameRecord, material_area):
         if record.upload_key is None:
@@ -420,6 +439,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
                     self.image_queue.put_nowait(
                         {
                             "images": saver_images,
+                            "sequence_indices": [
+                                item["sequence_index"] for item in clip
+                            ],
                             "roi": list(material_area),
                         }
                     )
@@ -433,22 +455,45 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._action_state = None
 
     def on_action_recognition(self, request_id, resp):
-        record = self.results.get(request_id)
-        if not record:
-            logger.warning(f"收到未知或已丢弃的动作结果：{request_id}")
-            return
+        with self._state_lock:
+            record = self.results.get(request_id)
+            if not record:
+                logger.warning(f"收到未知或已丢弃的动作结果：{request_id}")
+                return
 
-        record.action_resp = resp
-        self._try_emit(request_id)
+            record.action_resp = resp
+            self._drain_ready_outputs()
 
-    def _try_emit(self, request_id):
-        record = self.results.get(request_id)
-        if not record or record.detection_resp is None:
-            return
+    def _is_ready_to_emit(self, record: FrameRecord):
+        if not record or not record.detection_processed:
+            return False
 
         if record.action_requested and record.action_resp is None:
-            return
+            return False
 
+        return True
+
+    def _drain_ready_outputs(self):
+        while self._next_emit_sequence < self._next_sequence_index:
+            request_id = self._sequence_to_request_id.get(self._next_emit_sequence)
+            if request_id is None:
+                self._next_emit_sequence += 1
+                continue
+
+            record = self.results.get(request_id)
+            if record is None:
+                self._sequence_to_request_id.pop(self._next_emit_sequence, None)
+                self._next_emit_sequence += 1
+                continue
+
+            if not self._is_ready_to_emit(record):
+                break
+
+            self._emit_record(record)
+            self._next_emit_sequence += 1
+
+    def _emit_record(self, record: FrameRecord):
+        request_id = record.request_id
         mold_area = self._build_area(record.image, "mold")
         detection_result = self._first_result(record.detection_resp)
         face_a, face_c = self._find_mold_faces(detection_result, mold_area)
