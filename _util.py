@@ -122,7 +122,7 @@ def in_polygon(point, polygon_points):
 
     :param yolo_results: list[np.ndarray]，每个元素形状 (num_boxes, 6)，每个 box: [x1, y1, x2, y2, conf, cls]
     :param polygon_points: list[tuple]，多边形顶点坐标 [(x, y), ...]
-    :return: bool，点是否在区域内
+    :return: bool, 点是否在区域内
     """
     point_count = len(polygon_points)
     if point_count == 2:
