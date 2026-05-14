@@ -120,7 +120,7 @@ def in_polygon(point, polygon_points) -> bool:
     """
     过滤中心点在多边形内部的 YOLO 检测结果
 
-    :param yolo_results: list[np.ndarray]，每个元素形状 (num_boxes, 6)，每个 box: [x1, y1, x2, y2, conf, cls]
+    :param point: 待判断的点坐标 (x, y)
     :param polygon_points: list[tuple]，多边形顶点坐标 [(x, y), ...]
     :return: bool, 点是否在区域内
     """
@@ -142,7 +142,7 @@ def in_polygon(point, polygon_points) -> bool:
         xj, yj = polygon_points[j]
         intersects = (yi > y) != (yj > y)
         denominator = yj - yi
-        if intersects:
+        if intersects and denominator != 0:
             x_intersect = xi + (xj - xi) * (y - yi) / denominator
             if x < x_intersect:
                 inside = not inside

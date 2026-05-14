@@ -312,7 +312,6 @@ class InnerScreenMicroscopicExaminationClient(QObject):
                 "image_encode": image_encode,
             }
         )
-        self._drain_ready_frames()
         return request_id
 
     @Slot(object, object)
