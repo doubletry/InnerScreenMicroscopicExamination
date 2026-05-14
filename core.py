@@ -27,6 +27,7 @@ from ._util import (DEFAULT_ACTION_CLIP_LENGTH, DEFAULT_REQUEST_TIMEOUT_MS,
 IMAGE_MODEL_NAME = ""
 MOLD_DETECTION_MODEL_NAME = "上下模检测"
 ACTION_MODEL_NAME = "内屏镜检"
+SAVE_THREAD_JOIN_TIMEOUT_SECONDS = 2
 
 current_file_path = os.path.abspath(__file__)
 current_dir = os.path.dirname(current_file_path)
@@ -47,8 +48,10 @@ class FrameRecord:
 
 
 def copy_stable_frame(image, max_attempts=5):
+    if max_attempts < 1:
+        max_attempts = 1
     previous = np.ascontiguousarray(image).copy()
-    for _ in range(max(1, max_attempts) - 1):
+    for _ in range(max_attempts - 1):
         current = np.ascontiguousarray(image).copy()
         if (
             current.shape == previous.shape
@@ -129,7 +132,7 @@ def save_segments(images, roi, root, sequence_indices=None):
         sequence_index = i
         if sequence_indices is not None and i < len(sequence_indices):
             sequence_index = sequence_indices[i]
-        image_path = osp.join(full_dirname, f"{i:06d}_seq{sequence_index:06d}.jpg")
+        image_path = osp.join(full_dirname, f"seq{sequence_index:06d}.jpg")
         image_bgr = cv2.cvtColor(np.ascontiguousarray(image), cv2.COLOR_RGB2BGR)
         crop = np.ascontiguousarray(image_bgr[ymin:ymax, xmin:xmax])
         cv2.imwrite(image_path, crop)
@@ -277,7 +280,6 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._save_segments_threading = threading.Thread(
             target=backend_save_segments,
             args=(self.image_queue, osp.join(current_dir, "history")),
-            daemon=True,
         )
         self._save_segments_threading.start()
 
@@ -299,7 +301,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
         self.image_queue.put(None)
         if self._save_segments_threading and self._save_segments_threading.is_alive():
-            self._save_segments_threading.join(timeout=2)
+            self._save_segments_threading.join(
+                timeout=SAVE_THREAD_JOIN_TIMEOUT_SECONDS
+            )
         self._save_segments_threading = None
         with self._state_lock:
             self._reset_runtime_state(reset_counts=False)
