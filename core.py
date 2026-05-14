@@ -339,7 +339,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             return
 
         self.results[request_id]["detection"] = resp
-        self._emit_detection_image_if_latest(self.results[request_id])
+        self._emit_detection_overlay_once(self.results[request_id])
         self._drain_ready_frames()
 
     def _get_response_timeout_ms(self):
@@ -631,9 +631,6 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         }
 
         self.resultsReady.emit({"request_id": request_id, "resp": data})
-        self._emit_detection_image_if_latest(
-            data, mold_color=mold_color, action_color=action_color
-        )
 
     def _get_preview_mold_color(self, data):
         """Return QColor for the frame's mold order without mutating state."""
@@ -678,7 +675,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._last_display_sequence_id = sequence_id
         return True
 
-    def _emit_detection_image_if_latest(self, data, mold_color=None, action_color=None):
+    def _emit_detection_overlay_once(self, data, mold_color=None, action_color=None):
         if data.get("annotated_image_emitted"):
             return
 
