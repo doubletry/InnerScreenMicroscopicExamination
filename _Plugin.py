@@ -1,10 +1,7 @@
 import os
 import os.path as osp
-import sys
 from collections import deque
-from datetime import datetime
 
-import cv2
 import numpy as np
 from hummingbirdai.logger_config import logger
 from hummingbirdai.plugins import PluginBase
@@ -22,7 +19,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QGroupBox,
 
 from ._Display import DisplayWidget
 from ._Setting import ConfigurationPanel
-from ._SideBar import SidebarStatusWidget
+from ._Sidebar import SidebarStatusWidget
 from ._util import get_package_name, get_v_channel_brightness
 from ._version import (__version__, compatibility, department, description,
                        organization, year)
@@ -402,8 +399,6 @@ class Plugin(PluginBase):
 
     @Slot(np.ndarray, float)
     def on_frame_received(self, frame_data: np.ndarray, timestamp: float):
-        # self.client.play_result()
-
         if not self.start_action.isChecked():
             return
 
@@ -414,20 +409,6 @@ class Plugin(PluginBase):
 
         request_id = self.client.handle_image(frame_data)
         self.request_id2relativetime_map[request_id] = timestamp
-        pass
-
-    # @Slot(np.ndarray, float)
-    # def on_frame_received(self, frame_data: np.ndarray, timestamp: float):
-    #     """接收到帧数据时调用"""
-
-    #     if not self.start_action.isChecked():
-    #         return
-    #     # 如果插件不活跃，直接返回
-    #     if not self.is_active:
-    #         return
-
-    #     request_id = self.client.handle_image(frame_data)
-    # self.request_id2relativetime_map[request_id] = timestamp
 
     @Slot(bytes, list, list)
     def on_segment_received(self, segment_data, frames, timestamps):

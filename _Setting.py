@@ -107,6 +107,18 @@ class ConfigurationPanel(QWidget):
         )
         param_configuration_group_layout.addRow("画面亮度阈值：", brighten_conf)
 
+        request_timeout_input = QDoubleSpinBox()
+        request_timeout_input.setObjectName("request_timeout_seconds")
+        request_timeout_input.setRange(0.1, 60.0)
+        request_timeout_input.setSingleStep(0.5)
+        request_timeout_input.setValue(
+            self.load_setting(request_timeout_input.objectName(), 3.0, float)
+        )
+        request_timeout_input.valueChanged.connect(
+            lambda value: self.save_setting(request_timeout_input.objectName(), value)
+        )
+        param_configuration_group_layout.addRow("请求超时时间（秒）：", request_timeout_input)
+
         save_clip_checkbox = QCheckBox()
         save_clip_checkbox.setObjectName("save_clip")
         save_clip_checkbox.setChecked(
