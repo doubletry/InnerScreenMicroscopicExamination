@@ -166,9 +166,8 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._upload_image_list = []
         self._upload_image_keys_len = 24
         self._action_request_id = []
-        self._pending_action_stats = set()
+        self._pending_action_requests = set()
         self._current_action = ResultState.PENDING
-        self._max_drain_batch = 4
         self._is_draining = False
         self._reset_frame_tracking_state()
 
@@ -195,7 +194,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._next_sequence_id = 0
         self._next_emit_sequence_id = 0
         self._action_request_id = []
-        self._pending_action_stats = set()
+        self._pending_action_requests = set()
 
     def init_client(self):
         try:
@@ -328,6 +327,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
     def _get_response_timeout_ms(self):
         return self._settings.value("response_timeout_ms", 500, type=int)
 
+    def _get_max_drain_batch(self):
+        return max(1, self._settings.value("max_drain_batch", 4, type=int))
+
     def _is_frame_ready(self, data):
         return "upload" in data and "detection" in data
 
@@ -344,8 +346,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
         self._is_draining = True
         processed = 0
+        max_drain_batch = self._get_max_drain_batch()
         try:
-            while processed < self._max_drain_batch:
+            while processed < max_drain_batch:
                 sequence_id = self._next_emit_sequence_id
                 request_id = self._sequence_to_request_id.get(sequence_id)
                 if request_id is None:
@@ -463,7 +466,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
                     logger.exception("保存图片失败")
 
             self._action_request_id.append(request_id)
-            self._pending_action_stats.add(request_id)
+            self._pending_action_requests.add(request_id)
             self._upload_image_keys = []
             self._upload_image_list = []
 
@@ -480,23 +483,21 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             )
             logger.debug(f"当前动作：{resp.results[0].label}")
         else:
-            logger.warning("未获取到动作结果，当前动作结果None")
+            logger.warning("未获取到动作结果，当前动作结果PENDING")
 
         self._current_action = action_result
 
         if request_id in self._action_request_id:
             self._action_request_id.remove(request_id)
 
-        if request_id in self._pending_action_stats:
-            self._pending_action_stats.remove(request_id)
+        if request_id in self._pending_action_requests:
+            self._pending_action_requests.remove(request_id)
             self._mold_status = ResultState.PENDING
             self._total_count += 1
             if action_result == ResultState.OK:
                 self._ok_count += 1
 
-            logger.info(
-                f"当前已做{self._total_count}, 一次通过率为{100 * self._ok_count / self._total_count:.2f}"
-            )
+            self._log_pass_rate()
             self.resultsReady.emit(
                 {
                     "request_id": request_id,
@@ -513,6 +514,11 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             return
 
         self._action_result_queue.append(action_result)
+
+    def _log_pass_rate(self):
+        logger.info(
+            f"当前已做{self._total_count}, 一次通过率为{100 * self._ok_count / self._total_count:.2f}"
+        )
 
     def _try_emit(self, request_id, data):
 
@@ -533,7 +539,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
         detection_resp = data["detection"]
         if not detection_resp.results:
-            logger.warning(f"跳过无检测结果帧 request_id={request_id}")
+            logger.warning(
+                f"跳过无检测结果帧 request_id={request_id}，请检查检测服务状态"
+            )
             return
 
         # 过滤上下模区域内的物体
@@ -591,7 +599,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         if state == ObjectState.DISAPPEARING:
             self._mold_status = ResultState.PENDING
 
-            if request_id in self._pending_action_stats:
+            if request_id in self._pending_action_requests:
                 action_result = ResultState.PENDING
             else:
                 action_result = (
@@ -604,11 +612,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
                 if action_result == ResultState.OK:
                     self._ok_count += 1
                 elif action_result != ResultState.NG:
-                    logger.warning(f"未获取到动作结果，当前动作结果None")
+                    logger.warning(f"未获取到动作结果，当前动作结果PENDING")
 
-                logger.info(
-                    f"当前已做{self._total_count}, 一次通过率为{100 * self._ok_count / self._total_count:.2f}"
-                )
+                self._log_pass_rate()
 
             self._state_tracker.reset()
             self._current_action = ResultState.PENDING

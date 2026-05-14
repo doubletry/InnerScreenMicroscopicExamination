@@ -120,6 +120,15 @@ class ConfigurationPanel(QWidget):
             "响应超时跳帧(ms)：", response_timeout_ms
         )
 
+        max_drain_batch = QSpinBox()
+        max_drain_batch.setObjectName("max_drain_batch")
+        max_drain_batch.setRange(1, 100)
+        max_drain_batch.setValue(self.load_setting(max_drain_batch.objectName(), 4, int))
+        max_drain_batch.valueChanged.connect(
+            lambda value: self.save_setting(max_drain_batch.objectName(), value)
+        )
+        param_configuration_group_layout.addRow("单次处理帧数：", max_drain_batch)
+
         save_clip_checkbox = QCheckBox()
         save_clip_checkbox.setObjectName("save_clip")
         save_clip_checkbox.setChecked(
