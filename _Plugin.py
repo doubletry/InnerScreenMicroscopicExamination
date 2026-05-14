@@ -6,6 +6,10 @@ from datetime import datetime
 
 import cv2
 import numpy as np
+from hummingbirdai.logger_config import logger
+from hummingbirdai.plugins import PluginBase
+from hummingbirdai.ui import logoer
+from hummingbirdai.widgets import AlarmToast, EventListWidget
 from PySide6.QtCore import (Property, QPropertyAnimation, QRect, QSettings, Qt,
                             QTimer, Signal, Slot)
 from PySide6.QtGui import (QAction, QBrush, QColor, QFont, QFontMetrics,
@@ -16,15 +20,10 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QGroupBox,
                                QSlider, QStyle, QStyleOptionSlider, QTextEdit,
                                QVBoxLayout, QWidget)
 
-from hummingbirdai.logger_config import logger
-from hummingbirdai.plugins import PluginBase
-from hummingbirdai.ui import logoer
-from hummingbirdai.widgets import AlarmToast, EventListWidget
-
 from ._Display import DisplayWidget
 from ._Setting import ConfigurationPanel
 from ._SideBar import SidebarStatusWidget
-from ._util import get_package_name, tcp_request, tcp_request_async
+from ._util import get_package_name, get_v_channel_brightness
 from ._version import (__version__, compatibility, department, description,
                        organization, year)
 from .core import InnerScreenMicroscopicExaminationClient
@@ -405,6 +404,14 @@ class Plugin(PluginBase):
     def on_frame_received(self, frame_data: np.ndarray, timestamp: float):
         # self.client.play_result()
 
+        if not self.start_action.isChecked():
+            return
+
+        if get_v_channel_brightness(frame_data) < self.settings.value(
+            "brighten_conf", 64, type=int
+        ):  # 如果画面过暗，可能是视频结束的黑屏，直接返回不处理
+            return
+
         request_id = self.client.handle_image(frame_data)
         self.request_id2relativetime_map[request_id] = timestamp
         pass
@@ -451,31 +458,3 @@ class Plugin(PluginBase):
         self.result_list_widget.set_strip_status(current_action)
 
         self.result_list_widget.set_total_and_ok(total_count, ok_count)
-
-    def start_fan(self):
-        enable = self.settings.value("enable_fan", False, bool)
-        if not enable:
-            logger.info("事故风机未使能")
-            return
-
-        ip = self.settings.value("accident_fan_ip")
-        port = self.settings.value("accident_fan_port", type=int)
-        start_order = self.settings.value("start_order")
-        self.requeuest_thread, self.worker = tcp_request_async(
-            self.main_window,
-            (ip, port),
-            bytes.fromhex(start_order),
-            on_success=self.handle_success,
-            on_error=self.handle_error,
-        )
-        logger.info("发送事故风机开启指令")
-
-    @Slot(bytes)
-    def handle_success(self, received_data: bytes):
-        """处理 TCP 请求成功的回调函数"""
-        logger.info(f"接收到事故风机继电器响应 {received_data.hex()}")
-
-    @Slot(object)
-    def handle_error(self, exception_obj: object):
-        """处理 TCP 请求失败的回调函数"""
-        logger.warning(f"发送事故风机命令异常: {exception_obj}")

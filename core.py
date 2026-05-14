@@ -15,20 +15,20 @@ import cv2
 import grpc
 import numpy as np
 from dateutil.parser import parse
-from loguru import logger
-from PySide6.QtCore import (QObject, QPoint, QSettings, Qt, QThread, QTimer,
-                            Signal, Slot)
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
-from turbojpeg import TurboJPEG
-
 from hummingbirdai.grpc import base_pb2
 from hummingbirdai.grpc.core import (ClientBase, DetectionClient,
                                      UploadImageClient,
                                      VideoClassificationClient)
 from hummingbirdai.multimedia import FrameSampler
 from hummingbirdai.ui import get_path
+from loguru import logger
+from PySide6.QtCore import (QObject, QPoint, QSettings, Qt, QThread, QTimer,
+                            Signal, Slot)
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
+from turbojpeg import TurboJPEG
 
-from ._util import ObjectState, StateTracker, in_polygon
+from ._util import (ObjectState, ResultState, StateTracker,
+                    get_v_channel_brightness, in_polygon)
 
 IMAGE_MODEL_NAME = ""
 
@@ -166,7 +166,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._upload_image_list = []
         self._upload_image_keys_len = 24
         self._action_request_id = []
-        self._current_action = ""
+        self._current_action = ResultState.PENDING
 
         self._action_state_tracker = StateTracker()
         self._action_state = None
@@ -177,7 +177,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._state_tracker = StateTracker()
 
         self._action_result_queue = []
-        self._mold_ok = None
+        self._mold_status = ResultState.PENDING
 
     def clear_image_queue(self):
 
@@ -444,14 +444,14 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             color = QColor(255, 0, 0)
             state = self._state_tracker.appear()
 
-            self._mold_ok = False
+            self._mold_status = ResultState.NG
 
         else:
             # 上下模位置正确
             color = QColor(0, 255, 0)
             state = self._state_tracker.appear()
 
-            self._mold_ok = True
+            self._mold_status = ResultState.OK
 
         pixmap = self.draw_detection_on_image(
             data["image"], data["detection"].results[0], color
@@ -469,15 +469,19 @@ class InnerScreenMicroscopicExaminationClient(QObject):
                 return
 
             if action_resp.results[0].label in ["OK", "NG"]:
-                self._current_action = action_resp.results[0].label
-                logger.debug(f"当前动作：{self._current_action}")
+                self._current_action = (
+                    ResultState.OK
+                    if action_resp.results[0].label == "OK"
+                    else ResultState.NG
+                )
+                logger.debug(f"当前动作：{action_resp.results[0].label}")
 
                 self._action_result_queue.append(self._current_action)
 
-        if self._current_action == "NG":
+        if self._current_action == ResultState.NG:
             color = QColor(255, 0, 0)
 
-        elif self._current_action == "OK":
+        elif self._current_action == ResultState.OK:
             color = QColor(0, 255, 0)
 
         else:
@@ -485,36 +489,52 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
         if state == ObjectState.DISAPPEARING:
             action_result = (
-                self._action_result_queue.pop(0) if self._action_result_queue else "NG"
+                self._action_result_queue.pop(0)
+                if self._action_result_queue
+                else ResultState.PENDING
             )
-            self._mold_ok = False
+            self._mold_status = ResultState.PENDING
 
-            if action_result == "OK":
+            if action_result == ResultState.OK:
                 self._ok_count += 1
                 self._total_count += 1
-            elif action_result == "NG":
+            elif action_result == ResultState.NG:
                 self._total_count += 1
+            else:
+                self._total_count += 1
+                logger.warning(f"未获取到动作结果，当前动作结果None")
 
             logger.info(
                 f"当前已做{self._total_count}, 一次通过率为{100 * self._ok_count / self._total_count:.2f}"
             )
             self._state_tracker.reset()
+            self._current_action = ResultState.PENDING
 
         else:
             action_result = (
-                self._action_result_queue[0] if self._action_result_queue else "NG"
+                self._action_result_queue[0]
+                if self._action_result_queue
+                else ResultState.PENDING
             )
 
         data["result"] = {
             "total": self._total_count,
             "ok": self._ok_count,
-            "current_action": action_result.lower() == "ok",
-            "current_mold": self._mold_ok,
+            "current_action": action_result,
+            "current_mold": self._mold_status,
         }
 
         self.resultsReady.emit({"request_id": request_id, "resp": data})
 
-        text = f"内屏镜检撕膜：{self._current_action}"
+        if self._current_action == ResultState.OK:
+            action_text = "OK"
+        elif self._current_action == ResultState.NG:
+            action_text = "NG"
+        else:
+            action_text = "PENDING"
+
+        text = f"内屏镜检撕膜：{action_text}, 明度:{get_v_channel_brightness(data['image']):.1f}"
+
         pixmap = self.draw_action_on_pixmap(pixmap, (10, 50), text, color)
 
         self.imageReady.emit(pixmap)

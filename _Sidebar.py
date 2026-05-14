@@ -4,6 +4,7 @@ import sys
 import cv2
 import grpc
 import numpy as np
+from hummingbirdai.widgets import GRPCPanel, SliderwithLabel, Switch
 from PySide6.QtCore import (Property, QPropertyAnimation, QRect, QSettings, Qt,
                             QTimer, Signal)
 from PySide6.QtGui import (QAction, QBrush, QColor, QFont, QImage, QPainter,
@@ -14,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QGridLayout, QGroupBox,
                                QStyleOptionSlider, QTextEdit, QVBoxLayout,
                                QWidget)
 
-from hummingbirdai.widgets import GRPCPanel, SliderwithLabel, Switch
+from ._util import ResultState
 
 
 class SidebarStatusWidget(QWidget):
@@ -220,35 +221,45 @@ class SidebarStatusWidget(QWidget):
 
     # ===================== 状态更新接口 =====================
 
-    def set_strip_status(self, is_ok: bool):
+    def set_strip_status(self, status: ResultState):
         """
-        设置撕膜动作状态：True=OK，False=NG
+        设置撕膜动作状态：ResultState.OK，ResultState.NG
         """
         self._set_status(
-            is_ok=is_ok,
+            status=status,
             icon_label=self.strip_status_icon,
             status_label=self.strip_status_text,
         )
 
-    def set_place_status(self, is_ok: bool):
+    def set_place_status(self, status: ResultState):
         """
-        设置上下模摆放状态：True=OK，False=NG
+        设置上下模摆放状态：ResultState.OK，ResultState.NG
         """
         self._set_status(
-            is_ok=is_ok,
+            status=status,
             icon_label=self.place_status_icon,
             status_label=self.place_status_text,
         )
 
-    def _set_status(self, is_ok: bool, icon_label: QLabel, status_label: QLabel):
+    def _set_status(
+        self, status: ResultState, icon_label: QLabel, status_label: QLabel
+    ):
         """
         根据 OK/NG 设置图标和文字颜色。
         当前用纯色方块模拟图标，你可以替换为实际 PNG/SVG 图标。
         """
-        status_text = "OK" if is_ok else "NG"
+        if status == ResultState.OK:
+            status_text = "OK"
+            color = QColor("#4CAF50")  # 绿
+        elif status == ResultState.NG:
+            status_text = "NG"
+            color = QColor("#F44336")  # 红
+        else:
+            status_text = "PENDING"
+            color = QColor("#9E9E9E")  # 灰
+
         status_label.setText(status_text)
 
-        color = QColor("#4CAF50") if is_ok else QColor("#F44336")  # 绿/红
         palette = status_label.palette()
         palette.setColor(status_label.foregroundRole(), color)
         status_label.setPalette(palette)

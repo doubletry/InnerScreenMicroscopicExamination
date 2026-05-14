@@ -5,6 +5,9 @@ import sys
 import cv2
 import grpc
 import numpy as np
+from hummingbirdai.logger_config import logger
+from hummingbirdai.widgets import (GRPCPanel, Switch, SwitchGroup,
+                                   TimeRangeDialog, TimeSpinBox)
 from PySide6.QtCore import (Property, QPropertyAnimation, QRect, QSettings, Qt,
                             QTime, QTimer, Signal)
 from PySide6.QtGui import (QAction, QBrush, QColor, QFont, QIcon, QImage,
@@ -15,12 +18,6 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QDoubleSpinBox,
                                QPushButton, QSizePolicy, QSlider, QSpacerItem,
                                QSpinBox, QStyle, QStyleOptionSlider, QTextEdit,
                                QVBoxLayout, QWidget)
-
-from hummingbirdai.logger_config import logger
-from hummingbirdai.widgets import (GRPCPanel, Switch, SwitchGroup,
-                                   TimeRangeDialog, TimeSpinBox)
-
-from ._util import tcp_request, tcp_request_async
 
 current_file_path = os.path.abspath(__file__)  # 当前文件的绝对路径
 current_dir = os.path.dirname(current_file_path)  # 当前文件所在目录
@@ -100,6 +97,15 @@ class ConfigurationPanel(QWidget):
         )
 
         param_configuration_group_layout.addRow("上下模检测阈值阈值：", detection_conf)
+
+        brighten_conf = QSpinBox()
+        brighten_conf.setObjectName("brighten_conf")
+        brighten_conf.setRange(0, 255)
+        brighten_conf.setValue((self.load_setting(brighten_conf.objectName(), 64, int)))
+        brighten_conf.valueChanged.connect(
+            lambda value: self.save_setting(brighten_conf.objectName(), value)
+        )
+        param_configuration_group_layout.addRow("画面亮度阈值：", brighten_conf)
 
         save_clip_checkbox = QCheckBox()
         save_clip_checkbox.setObjectName("save_clip")

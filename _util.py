@@ -1,12 +1,18 @@
 import socket
-from enum import Enum, auto
+from enum import Enum, IntEnum, StrEnum, auto
 from pathlib import Path
 
+import cv2
 import numpy as np
+from hummingbirdai.logger_config import logger
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 from shapely.geometry import Point, Polygon
 
-from hummingbirdai.logger_config import logger
+
+class ResultState(IntEnum):
+    PENDING = 0  # 还没结果（默认值）
+    OK = 1  # 成功
+    NG = 2  # 失败
 
 
 class ObjectState(Enum):
@@ -14,6 +20,26 @@ class ObjectState(Enum):
     APPEARING = auto()  # 正在从消失向出现（过渡态）
     APPEARED = auto()  # 完全出现
     DISAPPEARING = auto()  # 正在从出现向消失（过渡态）
+
+
+def get_v_channel_brightness(frame):
+    """
+    计算图像 HSV 空间 V 通道的平均亮度
+    :param frame: OpenCV 读取的 BGR 格式图像
+    :return: 亮度平均值 (0.0 - 255.0)，如果图像无效则返回 None
+    """
+    if frame is None:
+        return None
+
+    # 1. 将 BGR 转换为 HSV
+    # OpenCV 默认 BGR，转换到 HSV 后，通道顺序为 H(0), S(1), V(2)
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+    # 2. 提取 V 通道 (亮度/明度)
+    v_channel = hsv[:, :, 2]
+
+    # 3. 计算并返回平均值
+    return np.mean(v_channel)
 
 
 class StateTracker:
@@ -109,145 +135,6 @@ def in_polygon(point, polygon_points):
     poly = Polygon(polygon_points)
     center_point = Point(point[0], point[1])
     return poly.contains(center_point)
-
-
-class TcpRequestWorker(QObject):
-    """
-    在单独线程中执行 TCP 请求的 Worker 类。
-    """
-
-    # 定义信号：
-    # finished: 请求成功时发出，携带接收到的字节数据
-    # error: 请求失败时发出，携带发生的异常对象
-    finished = Signal(bytes)
-    error = Signal(object)
-
-    def __init__(self, address, data, timeout=1.0):
-        super().__init__()
-        self._address = address
-        self._data = data
-        self._timeout = timeout
-
-    @Slot()
-    def run(self):
-        """
-        执行实际的 TCP 请求逻辑。
-        此方法将在 QThread 启动后被调用。
-        """
-        recv_chunks = []
-        try:
-            # 创建并连接
-            with socket.create_connection(self._address, timeout=self._timeout) as sock:
-                # 发送所有数据
-                sock.sendall(self._data)
-                sock.settimeout(self._timeout)
-                try:
-                    chunk = sock.recv(1024)
-                    recv_chunks.append(chunk)
-                except socket.timeout as e:
-                    # 超时就认为对方不再发了
-                    logger.exception("tcp请求异常")
-                    self.error.emit(e)
-                    return
-
-            # 请求成功，发出 finished 信号
-            self.finished.emit(b"".join(recv_chunks))
-        except Exception as e:
-            # 请求失败，发出 error 信号
-            logger.exception("tcp请求异常")
-            self.error.emit(e)
-
-
-def tcp_request_async(
-    parent, address, data, timeout=1.0, on_success=None, on_error=None
-):
-    """
-    异步 TCP 客户端请求。
-    此函数会启动一个新线程来执行 TCP 请求，不会阻塞 UI。
-
-    :param address: (host, port)，例如 ("127.0.0.1", 5000)
-    :param data: 要发送的字节数据（bytes）
-    :param timeout: socket 超时时间（秒）
-    :param on_success: 请求成功时调用的回调函数，接收一个参数：收到的 bytes
-    :param on_error: 请求失败时调用的回调函数，接收一个参数：异常对象
-    :return: 启动的 QThread 实例，你可以选择性地保留它以便后续管理（如等待线程结束），
-             但通常为了不阻塞 UI，你不需要直接操作它。
-    """
-    # 1. 创建一个 QThread 对象
-    thread = QThread(parent)
-    # 2. 创建一个 Worker 对象，将请求参数传递给它
-    worker = TcpRequestWorker(address, data, timeout)
-    # 3. 将 Worker 移动到新线程中
-    worker.moveToThread(thread)
-
-    # 4. 连接信号和槽：
-    # 当线程启动时，调用 worker 的 run 方法
-    thread.started.connect(worker.run)
-
-    # 当 worker 完成（成功或失败）时，执行相应的回调函数
-    if on_success:
-        worker.finished.connect(on_success)
-    if on_error:
-        worker.error.connect(on_error)
-
-    # 5. 连接清理信号：
-    # 无论 worker 成功还是失败，都让线程退出
-    worker.finished.connect(thread.quit)
-    worker.error.connect(thread.quit)
-    # 当线程退出时，安全地删除 worker 和 thread 对象
-    thread.finished.connect(worker.deleteLater)
-    thread.finished.connect(thread.deleteLater)
-
-    # 6. 启动线程
-    thread.start()
-
-    return thread, worker
-
-
-def tcp_request(address, data, timeout=1.0):
-    """
-    简单 TCP 客户端：
-    - 连接到 address = (host, port)
-    - 发送 data (bytes)
-    - 接收服务器返回的数据（直到对方关闭连接或超时）
-    - 关闭连接
-    - 返回收到的 bytes
-
-    :param address: (host, port)，例如 ("127.0.0.1", 5000)
-    :param data: 要发送的字节数据（bytes）
-    :param timeout: socket 超时时间（秒）
-    :return: 服务器返回的所有 bytes
-    """
-    recv_chunks = []
-
-    # 创建并连接
-    with socket.create_connection(address, timeout=timeout) as sock:
-        # 发送所有数据
-        sock.sendall(data)
-
-        # 告诉服务器：我这边已经发完了（半关闭写端）
-        try:
-            sock.shutdown(socket.SHUT_WR)
-        except OSError:
-            # 某些平台/情况可能不支持 shutdown，忽略即可
-            pass
-
-        # 接收数据，直到对方关闭或超时
-        sock.settimeout(timeout)
-        while True:
-            try:
-                chunk = sock.recv(4096)
-            except socket.timeout:
-                # 超时就认为对方不再发了
-                break
-
-            if not chunk:
-                # 对方关闭连接
-                break
-
-            recv_chunks.append(chunk)
-
-    return b"".join(recv_chunks)
 
 
 def get_package_name():

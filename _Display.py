@@ -4,6 +4,7 @@ import sys
 
 import cv2
 import numpy as np
+from hummingbirdai.widgets import MultiDrawingCanvas, ShapeType
 from PySide6.QtCore import (Property, QPoint, QPropertyAnimation, QRect,
                             QSettings, Qt, QTimer, Signal)
 from PySide6.QtGui import (QAction, QBrush, QColor, QFont, QIcon, QImage,
@@ -12,8 +13,6 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QGridLayout, QGroupBox,
                                QHBoxLayout, QLabel, QMenu, QPushButton,
                                QSlider, QStyle, QStyleOptionSlider, QTextEdit,
                                QVBoxLayout, QWidget)
-
-from hummingbirdai.widgets import MultiDrawingCanvas, ShapeType
 
 current_file_path = osp.abspath(__file__)  # 当前文件的绝对路径
 current_dir = osp.dirname(current_file_path)  # 当前文件所在目录
