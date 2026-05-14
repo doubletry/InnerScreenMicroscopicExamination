@@ -96,11 +96,9 @@ def save_segments(images, roi, root, sequence_indices=None):
     ymax = max(roi[0][1], roi[1][1])
 
     for i, image in enumerate(images):
-        sequence_index = (
-            sequence_indices[i]
-            if sequence_indices is not None and i < len(sequence_indices)
-            else i
-        )
+        sequence_index = i
+        if sequence_indices is not None and i < len(sequence_indices):
+            sequence_index = sequence_indices[i]
         image_path = osp.join(full_dirname, f"{sequence_index:06d}.jpg")
         image_bgr = cv2.cvtColor(np.ascontiguousarray(image), cv2.COLOR_RGB2BGR)
         crop = np.ascontiguousarray(image_bgr[ymin:ymax, xmin:xmax])
@@ -465,7 +463,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             self._drain_ready_outputs()
 
     def _is_ready_to_emit(self, record: FrameRecord):
-        if not record or not record.detection_processed:
+        if record is None or not record.detection_processed:
             return False
 
         if record.action_requested and record.action_resp is None:
