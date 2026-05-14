@@ -143,7 +143,7 @@ def in_polygon(point, polygon_points):
         intersects = (yi > y) != (yj > y)
         denominator = yj - yi
         if intersects and denominator != 0:
-            x_intersect = (xj - xi) * (y - yi) / denominator + xi
+            x_intersect = xi + (xj - xi) * (y - yi) / denominator
             if x < x_intersect:
                 inside = not inside
         j = i

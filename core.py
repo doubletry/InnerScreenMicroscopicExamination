@@ -670,6 +670,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         sequence_id = data.get("sequence_id", NO_FRAME_SEQUENCE_ID)
         if sequence_id < self._last_display_sequence_id:
             return False
+        # Raw previews are no longer emitted; one detection overlay per sequence is enough.
         if sequence_id == self._last_display_sequence_id:
             return False
         self._last_display_sequence_id = sequence_id
