@@ -346,6 +346,22 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._sequence_to_request_id.pop(sequence_id, None)
         self.results.pop(request_id, None)
 
+    def _get_scaled_area(self, image, settings_key):
+        h, w, _ = image.shape
+        area_points = self._settings.value(settings_key, [], type=list)
+        area = []
+
+        if area_points:
+            for point in area_points[0]:
+                area.append(
+                    (
+                        int(point[0] * w),
+                        int(point[1] * h),
+                    )
+                )
+
+        return area
+
     def _drain_ready_frames(self):
         if self._is_draining:
             return
@@ -392,23 +408,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
                 QTimer.singleShot(0, self._drain_ready_frames)
 
     def _process_ready_frame(self, request_id, data):
-        h, w, _ = data["image"].shape
-        material_area_points = self._settings.value(
-            "material/points",
-            [],
-            type=list,
-        )
-
-        material_area = []
-
-        if material_area_points:
-            for point in material_area_points[0]:
-                material_area.append(
-                    (
-                        int(point[0] * w),
-                        int(point[1] * h),
-                    )
-                )
+        material_area = self._get_scaled_area(data["image"], "material/points")
 
         box_material = []
 
@@ -529,19 +529,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
     def _try_emit(self, request_id, data):
 
         # 求上下模区域
-        h, w, _ = data["image"].shape
-        mold_area_points = self._settings.value("mold/points", [], type=list)
-
-        mold_area = []
-
-        if mold_area_points:
-            for point in mold_area_points[0]:
-                mold_area.append(
-                    (
-                        int(point[0] * w),
-                        int(point[1] * h),
-                    )
-                )
+        mold_area = self._get_scaled_area(data["image"], "mold/points")
 
         detection_resp = data["detection"]
         if not detection_resp.results:
@@ -637,18 +625,8 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._emit_image_if_needed(data, mold_color=color, action_color=action_color)
 
     def _get_preview_mold_color(self, data):
-        h, w, _ = data["image"].shape
-        mold_area_points = self._settings.value("mold/points", [], type=list)
-        mold_area = []
-
-        if mold_area_points:
-            for point in mold_area_points[0]:
-                mold_area.append(
-                    (
-                        int(point[0] * w),
-                        int(point[1] * h),
-                    )
-                )
+        """Return green for correct mold order, red for reversed order, blue when uncertain."""
+        mold_area = self._get_scaled_area(data["image"], "mold/points")
 
         detection_resp = data.get("detection")
         if not detection_resp or not detection_resp.results:
