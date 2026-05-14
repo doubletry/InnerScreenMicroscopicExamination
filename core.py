@@ -34,6 +34,7 @@ IMAGE_MODEL_NAME = ""
 
 MOLD_DETECTION_MODEL_NAME = "上下模检测"
 ACTION_MODEL_NAME = "内屏镜检"
+INITIAL_SEQUENCE_ID = -1
 
 TURBO_JPEG_DLL = get_path("dlls/libturbojpeg.dll")
 
@@ -193,7 +194,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._sequence_to_request_id = {}
         self._next_sequence_id = 0
         self._next_emit_sequence_id = 0
-        self._last_display_sequence_id = -1
+        self._last_display_sequence_id = INITIAL_SEQUENCE_ID
         self._action_request_id = []
         self._pending_action_requests = set()
 
@@ -302,6 +303,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
                 "image_encode": image_encode,
             }
         )
+        # Keep the video live even while upload/detection responses are pending.
         self._emit_raw_image(self.results[request_id])
         self._drain_ready_frames()
         return request_id
@@ -677,7 +679,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         if data.get("annotated_image_emitted"):
             return
 
-        # Track annotated emission separately so it can replace the raw preview once.
+        # Annotated frames may update the display once for the same sequence after its raw preview.
         if not self._should_emit_image(data, allow_same_sequence_update=True):
             return
 
@@ -727,7 +729,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         qimage = QImage(
             contiguous_frame.data, w, h, bytes_per_line, QImage.Format_RGB888
         )
-        # Detach from the numpy buffer to prevent corruption when frames are reused or deallocated.
+        # This extra copy trades memory bandwidth for safety when frames are reused or deallocated.
         return qimage.copy()
 
     def draw_detection_on_image(self, frame_rgb, result, color):
