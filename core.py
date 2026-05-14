@@ -283,8 +283,11 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         """
         self._drain_ready_frames()
         pending_frame_count = len(self.results)
-        if pending_frame_count >= self._get_max_pending_frames():
-            logger.warning(f"跳过待处理过多帧，当前待处理={pending_frame_count}")
+        max_pending_frames = self._get_max_pending_frames()
+        if pending_frame_count >= max_pending_frames:
+            logger.warning(
+                f"跳过待处理过多帧，当前待处理={pending_frame_count}, 上限={max_pending_frames}"
+            )
             return None
 
         if request_id is None:

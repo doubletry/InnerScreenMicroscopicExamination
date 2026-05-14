@@ -122,7 +122,7 @@ def in_polygon(point, polygon_points):
 
     :param yolo_results: list[np.ndarray]，每个元素形状 (num_boxes, 6)，每个 box: [x1, y1, x2, y2, conf, cls]
     :param polygon_points: list[tuple]，多边形顶点坐标 [(x, y), ...]
-    :return: list[np.ndarray]，过滤后的检测结果，格式与输入相同
+    :return: bool，点是否在区域内
     """
     point_count = len(polygon_points)
     if point_count == 2:
@@ -141,8 +141,9 @@ def in_polygon(point, polygon_points):
     for i, (xi, yi) in enumerate(polygon_points):
         xj, yj = polygon_points[j]
         intersects = (yi > y) != (yj > y)
-        if intersects and yj != yi:
-            x_intersect = (xj - xi) * (y - yi) / (yj - yi) + xi
+        denominator = yj - yi
+        if intersects and denominator != 0:
+            x_intersect = (xj - xi) * (y - yi) / denominator + xi
             if x < x_intersect:
                 inside = not inside
         j = i
