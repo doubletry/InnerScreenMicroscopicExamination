@@ -554,7 +554,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
         if not face_a or not face_c:
             # 上下模不存在
-            color = QColor(0, 0, 255)
+            mold_color = QColor(0, 0, 255)
 
             if not face_a and not face_c:
                 state = self._state_tracker.disappear()
@@ -563,26 +563,19 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
         elif face_a.y_min < face_c.y_min:
             # 上下模位置错误
-            color = QColor(255, 0, 0)
+            mold_color = QColor(255, 0, 0)
             state = self._state_tracker.appear()
 
             self._mold_status = ResultState.NG
 
         else:
             # 上下模位置正确
-            color = QColor(0, 255, 0)
+            mold_color = QColor(0, 255, 0)
             state = self._state_tracker.appear()
 
             self._mold_status = ResultState.OK
 
-        if self._current_action == ResultState.NG:
-            action_color = QColor(255, 0, 0)
-
-        elif self._current_action == ResultState.OK:
-            action_color = QColor(0, 255, 0)
-
-        else:
-            action_color = QColor(0, 0, 255)
+        action_color = self._get_action_color()
 
         if state == ObjectState.DISAPPEARING:
             self._mold_status = ResultState.PENDING
@@ -622,10 +615,12 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         }
 
         self.resultsReady.emit({"request_id": request_id, "resp": data})
-        self._emit_image_if_needed(data, mold_color=color, action_color=action_color)
+        self._emit_image_if_needed(
+            data, mold_color=mold_color, action_color=action_color
+        )
 
     def _get_preview_mold_color(self, data):
-        """Return green for correct mold order, red for reversed order, blue when uncertain."""
+        """Return green when face_a.y_min >= face_c.y_min, red when reversed, blue when uncertain."""
         mold_area = self._get_scaled_area(data["image"], "mold/points")
 
         detection_resp = data.get("detection")
