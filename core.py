@@ -122,14 +122,14 @@ def save_segments(images, roi, root, sequence_indices=None):
         logger.warning("保存片段失败：未配置有效物料区域")
         return
 
-    dirname = _clip_directory_name(sequence_indices)
-    full_dirname = osp.join(root, dirname)
-    os.makedirs(full_dirname, exist_ok=True)
-
     first_image = images[0] if images else None
     if first_image is None:
         logger.warning("保存片段失败：图像为空")
         return
+
+    dirname = _clip_directory_name(sequence_indices)
+    full_dirname = osp.join(root, dirname)
+    os.makedirs(full_dirname, exist_ok=True)
 
     height, width = first_image.shape[:2]
     xmin = max(0, min(roi[0][0], roi[1][0]))
