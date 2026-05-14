@@ -17,7 +17,7 @@ from ._Sidebar import SidebarStatusWidget
 from ._util import get_package_name, get_v_channel_brightness
 from ._version import (__version__, compatibility, department, description,
                        organization, year)
-from .core import InnerScreenMicroscopicExaminationClient
+from .core import InnerScreenMicroscopicExaminationClient, copy_stable_frame
 
 current_file_path = os.path.abspath(__file__)  # 当前文件的绝对路径
 current_dir = os.path.dirname(current_file_path)  # 当前文件所在目录
@@ -395,7 +395,7 @@ class Plugin(PluginBase):
 
         # 视频解码线程可能复用同一块缓冲区，必须在进入插槽的第一时间整帧拷贝，
         # 避免后续处理过程中读到“半新半旧”的画面（即拼接现象）。
-        frame_data = np.ascontiguousarray(frame_data).copy()
+        frame_data = copy_stable_frame(frame_data)
 
         if get_v_channel_brightness(frame_data) < self.settings.value(
             "brighten_conf", 64, type=int

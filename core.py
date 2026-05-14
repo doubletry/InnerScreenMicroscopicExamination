@@ -46,6 +46,20 @@ class FrameRecord:
     action_requested: bool = False
 
 
+def copy_stable_frame(image, max_attempts=5):
+    previous = np.ascontiguousarray(image).copy()
+    for _ in range(max(1, max_attempts) - 1):
+        current = np.ascontiguousarray(image).copy()
+        if (
+            current.shape == previous.shape
+            and current.dtype == previous.dtype
+            and np.array_equal(current, previous)
+        ):
+            return current
+        previous = current
+    return previous.copy()
+
+
 def get_machine_unique_id():
     mac = uuid.getnode()
     return str(uuid.uuid5(uuid.NAMESPACE_DNS, str(mac)))
@@ -81,25 +95,41 @@ def generate_random_str(length=10):
     return "".join(random.sample(chars, length))
 
 
+def _clip_dirname(sequence_indices):
+    random_suffix = generate_random_str(6)
+    if sequence_indices is not None and len(sequence_indices) > 0:
+        return f"{sequence_indices[0]:06d}_{sequence_indices[-1]:06d}_{random_suffix}"
+    return f"{int(time.time() * 1000)}_{random_suffix}"
+
+
 def save_segments(images, roi, root, sequence_indices=None):
     if len(roi) < 2:
         logger.warning("保存片段失败：未配置有效物料区域")
         return
 
-    dirname = generate_random_str(12)
+    dirname = _clip_dirname(sequence_indices)
     full_dirname = osp.join(root, dirname)
     os.makedirs(full_dirname, exist_ok=True)
 
-    xmin = min(roi[0][0], roi[1][0])
-    xmax = max(roi[0][0], roi[1][0])
-    ymin = min(roi[0][1], roi[1][1])
-    ymax = max(roi[0][1], roi[1][1])
+    first_image = images[0] if images else None
+    if first_image is None:
+        logger.warning("保存片段失败：图像为空")
+        return
+
+    height, width = first_image.shape[:2]
+    xmin = max(0, min(roi[0][0], roi[1][0]))
+    xmax = min(width, max(roi[0][0], roi[1][0]))
+    ymin = max(0, min(roi[0][1], roi[1][1]))
+    ymax = min(height, max(roi[0][1], roi[1][1]))
+    if xmin >= xmax or ymin >= ymax:
+        logger.warning("保存片段失败：物料区域超出图像范围")
+        return
 
     for i, image in enumerate(images):
         sequence_index = i
         if sequence_indices is not None and i < len(sequence_indices):
             sequence_index = sequence_indices[i]
-        image_path = osp.join(full_dirname, f"{sequence_index:06d}.jpg")
+        image_path = osp.join(full_dirname, f"{i:06d}_seq{sequence_index:06d}.jpg")
         image_bgr = cv2.cvtColor(np.ascontiguousarray(image), cv2.COLOR_RGB2BGR)
         crop = np.ascontiguousarray(image_bgr[ymin:ymax, xmin:xmax])
         cv2.imwrite(image_path, crop)
@@ -159,8 +189,19 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._state_lock = threading.RLock()
 
     def clear_image_queue(self):
+        self._clear_pending_image_queue(keep_stop_signal=True)
         with self._state_lock:
             self._reset_runtime_state(reset_counts=True)
+
+    def _clear_pending_image_queue(self, keep_stop_signal=False):
+        while True:
+            try:
+                item = self.image_queue.get_nowait()
+            except queue.Empty:
+                break
+            if item is None and keep_stop_signal:
+                self.image_queue.put(None)
+                break
 
     def _reset_runtime_state(self, reset_counts=False):
         self.results = OrderedDict()
@@ -232,9 +273,11 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._start_client_thread(self.mold_detection_client)
         self._start_client_thread(self.action_client)
 
+        self._clear_pending_image_queue()
         self._save_segments_threading = threading.Thread(
             target=backend_save_segments,
             args=(self.image_queue, osp.join(current_dir, "history")),
+            daemon=True,
         )
         self._save_segments_threading.start()
 
@@ -255,6 +298,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self.threads.clear()
 
         self.image_queue.put(None)
+        if self._save_segments_threading and self._save_segments_threading.is_alive():
+            self._save_segments_threading.join(timeout=2)
+        self._save_segments_threading = None
         with self._state_lock:
             self._reset_runtime_state(reset_counts=False)
 
@@ -266,7 +312,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             # 即使调用方已经拷贝过，这里再用 ndarray.copy() 做一次受控的、独立缓冲的拷贝，
             # 保证 FrameRecord 持有的图像与上传客户端持有的图像彼此完全独立，
             # 避免任意一方在后台线程修改/编码图像时影响到显示与保存。
-            source = np.ascontiguousarray(image)
+            source = copy_stable_frame(image)
             record_frame = source.copy()
             upload_frame = source.copy()
 
@@ -513,7 +559,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
         pixmap = self.draw_detection_on_image(record.image, detection_result, color)
         data = {
-            "image": record.image,
+            "image": np.ascontiguousarray(record.image).copy(),
             "upload": record.upload_resp,
             "detection": record.detection_resp,
             "drawn": pixmap,
