@@ -1,11 +1,8 @@
-import os
-
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFormLayout, QGroupBox,
                                QLineEdit, QSpinBox, QVBoxLayout, QWidget)
 
-current_file_path = os.path.abspath(__file__)  # 当前文件的绝对路径
-current_dir = os.path.dirname(current_file_path)  # 当前文件所在目录
+from ._util import DEFAULT_ACTION_CLIP_LENGTH, DEFAULT_REQUEST_TIMEOUT_MS
 
 
 class ConfigurationPanel(QWidget):
@@ -96,7 +93,9 @@ class ConfigurationPanel(QWidget):
         action_clip_length_input.setObjectName("action_clip_length")
         action_clip_length_input.setRange(1, 240)
         action_clip_length_input.setValue(
-            self.load_setting(action_clip_length_input.objectName(), 24, int)
+            self.load_setting(
+                action_clip_length_input.objectName(), DEFAULT_ACTION_CLIP_LENGTH, int
+            )
         )
         action_clip_length_input.valueChanged.connect(
             lambda value: self.save_setting(action_clip_length_input.objectName(), value)
@@ -110,7 +109,9 @@ class ConfigurationPanel(QWidget):
         request_timeout_input.setRange(100, 60000)
         request_timeout_input.setSingleStep(100)
         request_timeout_input.setValue(
-            self.load_setting(request_timeout_input.objectName(), 2000, int)
+            self.load_setting(
+                request_timeout_input.objectName(), DEFAULT_REQUEST_TIMEOUT_MS, int
+            )
         )
         request_timeout_input.valueChanged.connect(
             lambda value: self.save_setting(request_timeout_input.objectName(), value)

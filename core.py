@@ -20,7 +20,8 @@ from loguru import logger
 from PySide6.QtCore import QObject, QPoint, QSettings, QThread, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 
-from ._util import (ObjectState, ResultState, StateTracker,
+from ._util import (DEFAULT_ACTION_CLIP_LENGTH, DEFAULT_REQUEST_TIMEOUT_MS,
+                    ObjectState, ResultState, StateTracker,
                     get_v_channel_brightness, in_polygon)
 
 IMAGE_MODEL_NAME = ""
@@ -96,7 +97,7 @@ def save_segments(images, roi, root):
     for i, image in enumerate(images):
         image_path = osp.join(full_dirname, f"{i}.jpg")
         image_bgr = cv2.cvtColor(np.ascontiguousarray(image), cv2.COLOR_RGB2BGR)
-        crop = np.ascontiguousarray(image_bgr[ymin:ymax, xmin:xmax]).copy()
+        crop = np.ascontiguousarray(image_bgr[ymin:ymax, xmin:xmax])
         cv2.imwrite(image_path, crop)
 
     logger.info(f"保存分割图片成功，共{len(images)}张，保存到{full_dirname}")
@@ -171,10 +172,17 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             self._total_count = 0
 
     def _action_clip_length(self):
-        return max(1, self._settings.value("action_clip_length", 24, type=int))
+        return max(
+            1,
+            self._settings.value(
+                "action_clip_length", DEFAULT_ACTION_CLIP_LENGTH, type=int
+            ),
+        )
 
     def _request_timeout_seconds(self):
-        timeout_ms = self._settings.value("request_timeout_ms", 2000, type=int)
+        timeout_ms = self._settings.value(
+            "request_timeout_ms", DEFAULT_REQUEST_TIMEOUT_MS, type=int
+        )
         return max(1, timeout_ms) / 1000.0
 
     def init_client(self):
@@ -244,7 +252,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         if request_id is None:
             request_id = secrets.token_hex(4)
 
-        frame = np.ascontiguousarray(image).copy()
+        frame = np.array(image, copy=True, order="C")
         sequence_index = self._next_sequence_index
         self._next_sequence_index += 1
 
@@ -366,7 +374,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             {
                 "sequence_index": record.sequence_index,
                 "key": record.upload_key,
-                "image": record.image.copy(),
+                "image": record.image,
                 "roi": list(material_area),
             }
         )
@@ -576,9 +584,10 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         return pixmap
 
     def draw_detection_on_image(self, frame_rgb, result, color):
-        frame = np.ascontiguousarray(frame_rgb).copy()
+        frame = np.array(frame_rgb, copy=True, order="C")
         h, w, ch = frame.shape
         bytes_per_line = ch * w
+        # QImage wraps the NumPy buffer, so copy it before the local array is released.
         qimg = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
         pixmap = QPixmap.fromImage(qimg)
 

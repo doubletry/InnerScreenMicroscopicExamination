@@ -1,12 +1,12 @@
-import socket
-from enum import Enum, IntEnum, StrEnum, auto
+from enum import Enum, IntEnum, auto
 from pathlib import Path
 
 import cv2
 import numpy as np
-from hummingbirdai.logger_config import logger
-from PySide6.QtCore import QObject, QThread, Signal, Slot
 from shapely.geometry import Point, Polygon
+
+DEFAULT_ACTION_CLIP_LENGTH = 24
+DEFAULT_REQUEST_TIMEOUT_MS = 2000
 
 
 class ResultState(IntEnum):
