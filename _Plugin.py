@@ -1,28 +1,19 @@
 import os
 import os.path as osp
-import sys
 from collections import deque
-from datetime import datetime
 
-import cv2
 import numpy as np
 from hummingbirdai.logger_config import logger
 from hummingbirdai.plugins import PluginBase
 from hummingbirdai.ui import logoer
-from hummingbirdai.widgets import AlarmToast, EventListWidget
-from PySide6.QtCore import (Property, QPropertyAnimation, QRect, QSettings, Qt,
-                            QTimer, Signal, Slot)
-from PySide6.QtGui import (QAction, QBrush, QColor, QFont, QFontMetrics,
-                           QImage, QPainter, QPen, QPixmap)
-from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QGroupBox,
-                               QHBoxLayout, QLabel, QMessageBox, QPushButton,
-                               QSlider, QStyle, QStyleOptionSlider, QTextEdit,
-                               QVBoxLayout, QWidget)
+from hummingbirdai.widgets import AlarmToast
+from PySide6.QtCore import Qt, Slot
+from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QPainter, QPixmap
+from PySide6.QtWidgets import QDialog, QMessageBox, QVBoxLayout
 
 from ._Display import DisplayWidget
 from ._Setting import ConfigurationPanel
-from ._SideBar import SidebarStatusWidget
+from ._Sidebar import SidebarStatusWidget
 from ._util import get_package_name, get_v_channel_brightness
 from ._version import (__version__, compatibility, department, description,
                        organization, year)
@@ -194,11 +185,6 @@ class Plugin(PluginBase):
         sampling_window = self.settings.value("sampling_window", 15, type=int)
         anomaly_count = self.settings.value("anomaly_count", 5, type=int)
         self.smoother = FrameEventSmoother(sampling_window, anomaly_count)
-
-        # 上下模状态
-        self._mold_ok_count = 0
-        self._mold_ng_count = 0
-        self._mold_currend_state = None
 
     def get_name(self):
         return self.name
@@ -414,20 +400,6 @@ class Plugin(PluginBase):
 
         request_id = self.client.handle_image(frame_data)
         self.request_id2relativetime_map[request_id] = timestamp
-        pass
-
-    # @Slot(np.ndarray, float)
-    # def on_frame_received(self, frame_data: np.ndarray, timestamp: float):
-    #     """接收到帧数据时调用"""
-
-    #     if not self.start_action.isChecked():
-    #         return
-    #     # 如果插件不活跃，直接返回
-    #     if not self.is_active:
-    #         return
-
-    #     request_id = self.client.handle_image(frame_data)
-    # self.request_id2relativetime_map[request_id] = timestamp
 
     @Slot(bytes, list, list)
     def on_segment_received(self, segment_data, frames, timestamps):

@@ -1,23 +1,8 @@
 import os
-import os.path as osp
-import sys
 
-import cv2
-import grpc
-import numpy as np
-from hummingbirdai.logger_config import logger
-from hummingbirdai.widgets import (GRPCPanel, Switch, SwitchGroup,
-                                   TimeRangeDialog, TimeSpinBox)
-from PySide6.QtCore import (Property, QPropertyAnimation, QRect, QSettings, Qt,
-                            QTime, QTimer, Signal)
-from PySide6.QtGui import (QAction, QBrush, QColor, QFont, QIcon, QImage,
-                           QPainter, QPen, QPixmap)
-from PySide6.QtWidgets import (QApplication, QCheckBox, QDoubleSpinBox,
-                               QFormLayout, QFrame, QGridLayout, QGroupBox,
-                               QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-                               QPushButton, QSizePolicy, QSlider, QSpacerItem,
-                               QSpinBox, QStyle, QStyleOptionSlider, QTextEdit,
-                               QVBoxLayout, QWidget)
+from PySide6.QtCore import QSettings, Qt
+from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFormLayout, QGroupBox,
+                               QLineEdit, QSpinBox, QVBoxLayout, QWidget)
 
 current_file_path = os.path.abspath(__file__)  # 当前文件的绝对路径
 current_dir = os.path.dirname(current_file_path)  # 当前文件所在目录
@@ -106,6 +91,33 @@ class ConfigurationPanel(QWidget):
             lambda value: self.save_setting(brighten_conf.objectName(), value)
         )
         param_configuration_group_layout.addRow("画面亮度阈值：", brighten_conf)
+
+        action_clip_length_input = QSpinBox()
+        action_clip_length_input.setObjectName("action_clip_length")
+        action_clip_length_input.setRange(1, 240)
+        action_clip_length_input.setValue(
+            self.load_setting(action_clip_length_input.objectName(), 24, int)
+        )
+        action_clip_length_input.valueChanged.connect(
+            lambda value: self.save_setting(action_clip_length_input.objectName(), value)
+        )
+        param_configuration_group_layout.addRow(
+            "动作识别帧数：", action_clip_length_input
+        )
+
+        request_timeout_input = QSpinBox()
+        request_timeout_input.setObjectName("request_timeout_ms")
+        request_timeout_input.setRange(100, 60000)
+        request_timeout_input.setSingleStep(100)
+        request_timeout_input.setValue(
+            self.load_setting(request_timeout_input.objectName(), 2000, int)
+        )
+        request_timeout_input.valueChanged.connect(
+            lambda value: self.save_setting(request_timeout_input.objectName(), value)
+        )
+        param_configuration_group_layout.addRow(
+            "请求超时时间(ms)：", request_timeout_input
+        )
 
         save_clip_checkbox = QCheckBox()
         save_clip_checkbox.setObjectName("save_clip")
