@@ -119,13 +119,17 @@ class DisplayWidget(QWidget):
         layout.addLayout(show_grid, stretch=1)
         self.setLayout(layout)
 
-    def update_image(self, pixmap: QPixmap):
+    def update_image(self, image):
         """更新显示的图像"""
 
         if not self.isVisible():
             return
 
         try:
+            if isinstance(image, QImage):
+                pixmap = QPixmap.fromImage(image)
+            else:
+                pixmap = image
 
             # scaled_pixmap = pixmap.scaled(
             #     self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation

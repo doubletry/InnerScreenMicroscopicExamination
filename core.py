@@ -24,7 +24,7 @@ from hummingbirdai.ui import get_path
 from loguru import logger
 from PySide6.QtCore import (QObject, QPoint, QSettings, Qt, QThread, QTimer,
                             Signal, Slot)
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
 from turbojpeg import TurboJPEG
 
 from ._util import (ObjectState, ResultState, StateTracker,
@@ -147,7 +147,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
     """内屏镜检动作检测"""
 
     resultsReady = Signal(dict)
-    imageReady = Signal(QPixmap)
+    imageReady = Signal(QImage)
 
     def __init__(self, settings: QSettings, parent=None):
         super().__init__(parent)
@@ -169,6 +169,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._pending_action_requests = set()
         self._current_action = ResultState.PENDING
         self._is_draining = False
+        self._last_display_sequence_id = -1
         self._reset_frame_tracking_state()
 
         self._action_state_tracker = StateTracker()
@@ -193,6 +194,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._sequence_to_request_id = {}
         self._next_sequence_id = 0
         self._next_emit_sequence_id = 0
+        self._last_display_sequence_id = -1
         self._action_request_id = []
         self._pending_action_requests = set()
 
@@ -285,7 +287,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         sequence_id = self._next_sequence_id
         self._next_sequence_id += 1
 
-        frame_image = image.copy()
+        frame_image = np.array(image, copy=True, order="C")
         self.results[request_id] = {
             "sequence_id": sequence_id,
             "created_at_ms": time.monotonic() * 1000,
@@ -300,6 +302,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
                 "image_encode": image_encode,
             }
         )
+        self._emit_raw_image(self.results[request_id])
         self._drain_ready_frames()
         return request_id
 
@@ -327,7 +330,6 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             return
 
         self.results[request_id]["detection"] = resp
-        self._emit_image_if_needed(self.results[request_id])
         self._drain_ready_frames()
 
     def _get_response_timeout_ms(self):
@@ -616,7 +618,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         }
 
         self.resultsReady.emit({"request_id": request_id, "resp": data})
-        self._emit_image_if_needed(
+        self._emit_annotated_image_if_current(
             data, mold_color=mold_color, action_color=action_color
         )
 
@@ -654,9 +656,23 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             return QColor(0, 255, 0)
         return QColor(0, 0, 255)
 
-    def _emit_image_if_needed(self, data, mold_color=None, action_color=None):
-        """Emit imageReady once for a frame and mark data["image_emitted"]."""
-        if data.get("image_emitted"):
+    def _should_emit_image(self, data):
+        sequence_id = data.get("sequence_id", -1)
+        if sequence_id < self._last_display_sequence_id:
+            return False
+        self._last_display_sequence_id = sequence_id
+        return True
+
+    def _emit_raw_image(self, data):
+        if not self._should_emit_image(data):
+            return
+        self.imageReady.emit(self._image_to_qimage(data["image"]))
+
+    def _emit_annotated_image_if_current(self, data, mold_color=None, action_color=None):
+        if data.get("annotated_image_emitted"):
+            return
+
+        if not self._should_emit_image(data):
             return
 
         detection_resp = data.get("detection")
@@ -668,10 +684,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         if action_color is None:
             action_color = self._get_action_color()
 
-        pixmap = self.draw_detection_on_image(
+        image = self.draw_detection_on_image(
             data["image"], detection_resp.results[0], mold_color
         )
-        data["drawn"] = pixmap
 
         if self._current_action == ResultState.OK:
             action_text = "OK"
@@ -681,13 +696,13 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             action_text = "PENDING"
 
         text = f"内屏镜检撕膜：{action_text}, 明度:{get_v_channel_brightness(data['image']):.1f}"
-        pixmap = self.draw_action_on_pixmap(pixmap, (10, 50), text, action_color)
+        image = self.draw_action_on_image(image, (10, 50), text, action_color)
 
-        data["image_emitted"] = True
-        self.imageReady.emit(pixmap)
+        data["annotated_image_emitted"] = True
+        self.imageReady.emit(image)
 
-    def draw_action_on_pixmap(self, pixmap, coord, text, color):
-        painter = QPainter(pixmap)
+    def draw_action_on_image(self, image, coord, text, color):
+        painter = QPainter(image)
         painter.setRenderHint(QPainter.Antialiasing)
         pen_det = QPen(color, 3)
         font_det = QFont("Arial", 32)
@@ -697,20 +712,23 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         painter.drawText(QPoint(coord[0], coord[1]), text)
         painter.end()
 
-        return pixmap
+        return image
+
+    def _image_to_qimage(self, frame_rgb):
+        frame_rgb = np.ascontiguousarray(frame_rgb)
+        h, w, ch = frame_rgb.shape
+        bytes_per_line = frame_rgb.strides[0]
+        return QImage(
+            frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888
+        ).copy()
 
     def draw_detection_on_image(self, frame_rgb, result, color):
 
         # Step 1: 转为 QImage
-        h, w, ch = frame_rgb.shape
-        bytes_per_line = ch * w
-        qimg = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        image = self._image_to_qimage(frame_rgb)
 
-        # Step 2: 创建 QPixmap
-        pixmap = QPixmap.fromImage(qimg)
-
-        # Step 3: 用 QPainter 绘制
-        painter = QPainter(pixmap)
+        # Step 2: 用 QPainter 绘制
+        painter = QPainter(image)
         painter.setRenderHint(QPainter.Antialiasing)
 
         # 绘制 detection
@@ -737,4 +755,4 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
         painter.end()
 
-        return pixmap
+        return image
