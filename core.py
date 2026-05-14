@@ -347,6 +347,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self.results.pop(request_id, None)
 
     def _get_scaled_area(self, image, settings_key):
+        """Scale normalized points from settings into image coordinate tuples."""
         h, w, _ = image.shape
         area_points = self._settings.value(settings_key, [], type=list)
         area = []
@@ -620,7 +621,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         )
 
     def _get_preview_mold_color(self, data):
-        """Return green when face_a.y_min >= face_c.y_min, red when reversed, blue when uncertain."""
+        """Return QColor for the frame's mold order without mutating state."""
         mold_area = self._get_scaled_area(data["image"], "mold/points")
 
         detection_resp = data.get("detection")
@@ -654,6 +655,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         return QColor(0, 0, 255)
 
     def _emit_image_if_needed(self, data, mold_color=None, action_color=None):
+        """Emit imageReady once for a frame and mark data["image_emitted"]."""
         if data.get("image_emitted"):
             return
 
