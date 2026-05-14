@@ -285,15 +285,20 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         sequence_id = self._next_sequence_id
         self._next_sequence_id += 1
 
+        frame_image = image.copy()
         self.results[request_id] = {
             "sequence_id": sequence_id,
             "created_at_ms": time.monotonic() * 1000,
-            "image": image,
+            "image": frame_image,
         }
         self._sequence_to_request_id[sequence_id] = request_id
 
         self.upload_image_client.add_input_item(
-            {"request_id": request_id, "image": image, "image_encode": image_encode}
+            {
+                "request_id": request_id,
+                "image": frame_image,
+                "image_encode": image_encode,
+            }
         )
         self._drain_ready_frames()
         return request_id
@@ -322,6 +327,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             return
 
         self.results[request_id]["detection"] = resp
+        self._emit_image_if_needed(self.results[request_id])
         self._drain_ready_frames()
 
     def _get_response_timeout_ms(self):
@@ -441,7 +447,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
                 self._upload_image_list.pop(0)
 
             self._upload_image_keys.append(key)
-            self._upload_image_list.append(data["image"])
+            self._upload_image_list.append(data["image"].copy())
 
         elif self._action_state == ObjectState.DISAPPEARING:
             request = {
@@ -581,20 +587,14 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
             self._mold_status = ResultState.OK
 
-        pixmap = self.draw_detection_on_image(
-            data["image"], data["detection"].results[0], color
-        )
-
-        data["drawn"] = pixmap
-
         if self._current_action == ResultState.NG:
-            color = QColor(255, 0, 0)
+            action_color = QColor(255, 0, 0)
 
         elif self._current_action == ResultState.OK:
-            color = QColor(0, 255, 0)
+            action_color = QColor(0, 255, 0)
 
         else:
-            color = QColor(0, 0, 255)
+            action_color = QColor(0, 0, 255)
 
         if state == ObjectState.DISAPPEARING:
             self._mold_status = ResultState.PENDING
@@ -634,6 +634,69 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         }
 
         self.resultsReady.emit({"request_id": request_id, "resp": data})
+        self._emit_image_if_needed(data, mold_color=color, action_color=action_color)
+
+    def _get_preview_mold_color(self, data):
+        h, w, _ = data["image"].shape
+        mold_area_points = self._settings.value("mold/points", [], type=list)
+        mold_area = []
+
+        if mold_area_points:
+            for point in mold_area_points[0]:
+                mold_area.append(
+                    (
+                        int(point[0] * w),
+                        int(point[1] * h),
+                    )
+                )
+
+        detection_resp = data.get("detection")
+        if not detection_resp or not detection_resp.results:
+            return QColor(0, 0, 255)
+
+        face_a = None
+        face_c = None
+        for box in detection_resp.results[0].boxes:
+            center_x = (box.x_min + box.x_max) / 2
+            center_y = (box.y_min + box.y_max) / 2
+            if mold_area and not in_polygon((center_x, center_y), mold_area):
+                continue
+
+            if box.id == 0:
+                face_a = box
+            elif box.id == 2:
+                face_c = box
+
+        if face_a and face_c and face_a.y_min >= face_c.y_min:
+            return QColor(0, 255, 0)
+        if face_a and face_c:
+            return QColor(255, 0, 0)
+        return QColor(0, 0, 255)
+
+    def _get_action_color(self):
+        if self._current_action == ResultState.NG:
+            return QColor(255, 0, 0)
+        if self._current_action == ResultState.OK:
+            return QColor(0, 255, 0)
+        return QColor(0, 0, 255)
+
+    def _emit_image_if_needed(self, data, mold_color=None, action_color=None):
+        if data.get("image_emitted"):
+            return
+
+        detection_resp = data.get("detection")
+        if not detection_resp or not detection_resp.results:
+            return
+
+        if mold_color is None:
+            mold_color = self._get_preview_mold_color(data)
+        if action_color is None:
+            action_color = self._get_action_color()
+
+        pixmap = self.draw_detection_on_image(
+            data["image"], detection_resp.results[0], mold_color
+        )
+        data["drawn"] = pixmap
 
         if self._current_action == ResultState.OK:
             action_text = "OK"
@@ -643,9 +706,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             action_text = "PENDING"
 
         text = f"内屏镜检撕膜：{action_text}, 明度:{get_v_channel_brightness(data['image']):.1f}"
+        pixmap = self.draw_action_on_pixmap(pixmap, (10, 50), text, action_color)
 
-        pixmap = self.draw_action_on_pixmap(pixmap, (10, 50), text, color)
-
+        data["image_emitted"] = True
         self.imageReady.emit(pixmap)
 
     def draw_action_on_pixmap(self, pixmap, coord, text, color):
