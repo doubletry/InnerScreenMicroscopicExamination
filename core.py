@@ -252,6 +252,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         if request_id is None:
             request_id = secrets.token_hex(4)
 
+        # Detach from the video/player buffer, which may be reused after this call.
         frame = np.array(image, copy=True, order="C")
         sequence_index = self._next_sequence_index
         self._next_sequence_index += 1
@@ -399,6 +400,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
             if self._settings.value("save_clip", False, type=bool):
                 try:
+                    # The saver runs on a background thread, so hand it independent arrays.
                     self.image_queue.put_nowait(
                         {
                             "images": [item["image"].copy() for item in clip],
@@ -584,7 +586,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         return pixmap
 
     def draw_detection_on_image(self, frame_rgb, result, color):
-        frame = np.array(frame_rgb, copy=True, order="C")
+        frame = np.ascontiguousarray(frame_rgb)
         h, w, ch = frame.shape
         bytes_per_line = ch * w
         # QImage wraps the NumPy buffer, so copy it before the local array is released.
