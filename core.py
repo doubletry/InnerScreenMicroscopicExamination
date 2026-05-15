@@ -86,6 +86,7 @@ class FrameRecord:
     detection_resp: Any = None
     action_resp: Any = None
     action_submitted: bool = False
+    action_submitted_at: Optional[float] = None
     detection_processed: bool = False
     output_ready: bool = False
     skipped: bool = False
@@ -388,6 +389,11 @@ class InnerScreenMicroscopicExaminationClient(QObject):
     def _is_expired(self, record: FrameRecord) -> bool:
         return time.monotonic() - record.created_at >= self._request_timeout_seconds()
 
+    def _is_action_expired(self, record: FrameRecord) -> bool:
+        if record.action_submitted_at is None:
+            return False
+        return time.monotonic() - record.action_submitted_at >= self._request_timeout_seconds()
+
     def _drain_detection_in_order(self):
         """Process detection results strictly by sequence_index.
 
@@ -433,7 +439,19 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._records_by_request_id.pop(record.request_id, None)
         self._records_by_sequence.pop(record.sequence_index, None)
         self.results.pop(record.request_id, None)
-        if record.sequence_index == self._next_output_sequence:
+        self._advance_output_sequence_past_gaps()
+
+    def _advance_output_sequence_past_gaps(self):
+        """Advance output cursor across already-removed sequence gaps.
+
+        某些帧会因超时被跳过并提前从索引中删除；如果当前输出游标正好落在这些
+        缺口上，后续已完成的帧会被错误阻塞。这里只在序号已经出现过的前提下
+        跨过缺口，避免把未来尚未进入流水线的帧误判为已跳过。
+        """
+        while (
+            self._next_output_sequence <= self._sequence_index
+            and self._next_output_sequence not in self._records_by_sequence
+        ):
             self._next_output_sequence += 1
 
     def _process_detection_record(self, record: FrameRecord):
@@ -492,6 +510,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         }
         self.action_client.add_input_item(request)
         record.action_submitted = True
+        record.action_submitted_at = time.monotonic()
 
         if self._settings.value("save_clip", False, type=bool):
             try:
@@ -558,11 +577,12 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         未返回，则按 PENDING 输出，避免单次动作服务异常阻塞整个画面刷新。
         """
         while True:
+            self._advance_output_sequence_past_gaps()
             record = self._records_by_sequence.get(self._next_output_sequence)
             if record is None:
                 break
 
-            if record.action_submitted and not record.output_ready and self._is_expired(record):
+            if record.action_submitted and not record.output_ready and self._is_action_expired(record):
                 logger.warning(
                     f"动作识别超时，按 PENDING 输出 seq={record.sequence_index}, request_id={record.request_id}"
                 )
@@ -620,8 +640,8 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
         # record.pixmap 已包含检测框；这里仅叠加动作识别文字，保持绘制职责清晰。
         pixmap = record.pixmap or self.draw_detection_on_image(record.image, None, QColor(0, 0, 255))
-        color = self._action_color(self._current_action)
-        text = f"内屏镜检撕膜：{self._action_text(self._current_action)}, 亮度:{get_v_channel_brightness(record.image):.1f}"
+        color = self._action_color(action_result)
+        text = f"内屏镜检撕膜：{self._action_text(action_result)}, 亮度:{get_v_channel_brightness(record.image):.1f}"
         self.imageReady.emit(self.draw_action_on_pixmap(pixmap, (10, 50), text, color))
 
     def _dequeue_action_result(self) -> ResultState:
