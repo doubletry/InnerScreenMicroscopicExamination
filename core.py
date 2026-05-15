@@ -140,13 +140,15 @@ class ActionClipBuffer:
 
 
 def save_segments(
-    images: list[tuple[int, np.ndarray]], material_area: list[tuple[int, int]], root_dir: str
+    images: list[tuple[int, np.ndarray]],
+    material_area_points: list[tuple[int, int]],
+    root_dir: str,
 ):
     """Save an action clip to disk in sequence_index order.
 
     按 sequence_index 顺序保存动作片段图片；文件名使用零填充序号，确保文件系统
-    排序与视频帧序一致。material_area 为物料区域点列表，裁剪时使用前两个点；
-    少于两个点时保存完整画面；root_dir 为保存根目录。
+    排序与视频帧序一致。material_area_points 为物料区域点列表，裁剪时使用
+    前两个点；少于两个点时保存完整画面；root_dir 为保存根目录。
     """
     dirname = secrets.token_hex(6)
     full_dirname = osp.join(root_dir, dirname)
@@ -154,11 +156,11 @@ def save_segments(
 
     h, w = images[0][1].shape[:2] if images else (0, 0)
     xmin, xmax, ymin, ymax = 0, w, 0, h
-    if len(material_area) >= 2:
-        xmin = min(material_area[0][0], material_area[1][0])
-        xmax = max(material_area[0][0], material_area[1][0])
-        ymin = min(material_area[0][1], material_area[1][1])
-        ymax = max(material_area[0][1], material_area[1][1])
+    if len(material_area_points) >= 2:
+        xmin = min(material_area_points[0][0], material_area_points[1][0])
+        xmax = max(material_area_points[0][0], material_area_points[1][0])
+        ymin = min(material_area_points[0][1], material_area_points[1][1])
+        ymax = max(material_area_points[0][1], material_area_points[1][1])
 
     for sequence_index, image in images:
         # Zero-padding keeps filesystem order identical to frame order.
@@ -619,7 +621,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         # record.pixmap 已包含检测框；这里仅叠加动作识别文字，保持绘制职责清晰。
         pixmap = record.pixmap or self.draw_detection_on_image(record.image, None, QColor(0, 0, 255))
         color = self._action_color(self._current_action)
-        text = f"内屏镜检撕膜：{self._action_text(self._current_action)}, 明度:{get_v_channel_brightness(record.image):.1f}"
+        text = f"内屏镜检撕膜：{self._action_text(self._current_action)}, 亮度:{get_v_channel_brightness(record.image):.1f}"
         self.imageReady.emit(self.draw_action_on_pixmap(pixmap, (10, 50), text, color))
 
     def _dequeue_action_result(self) -> ResultState:
