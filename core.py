@@ -122,7 +122,7 @@ def save_segments(images: list[tuple[int, np.ndarray]], roi_points, root):
     for sequence_index, image in images:
         # Zero-padding keeps filesystem order identical to frame order.
         image_path = osp.join(full_dirname, f"{sequence_index:08d}.jpg")
-        image_bgr = cv2.cvtColor(copy_stable_frame(image), cv2.COLOR_RGB2BGR)
+        image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         cv2.imwrite(image_path, image_bgr[ymin:ymax, xmin:xmax])
 
     logger.info(f"保存分割图片成功，共{len(images)}张，保存到{full_dirname}")
@@ -591,10 +591,10 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         return pixmap
 
     def draw_detection_on_image(self, frame_rgb, result, color):
-        frame_rgb = copy_stable_frame(frame_rgb)
-        h, w, ch = frame_rgb.shape
+        owned_frame_rgb = copy_stable_frame(frame_rgb)
+        h, w, ch = owned_frame_rgb.shape
         # QImage must own its bytes because drawing happens after this local buffer is gone.
-        qimg = QImage(frame_rgb.tobytes(), w, h, ch * w, QImage.Format_RGB888).copy()
+        qimg = QImage(owned_frame_rgb.tobytes(), w, h, ch * w, QImage.Format_RGB888).copy()
         pixmap = QPixmap.fromImage(qimg)
 
         if result is None:
