@@ -25,15 +25,13 @@ class ObjectState(Enum):
 def get_v_channel_brightness(frame):
     """
     计算图像 HSV 空间 V 通道的平均亮度
-    :param frame: OpenCV 读取的 BGR 格式图像
+    :param frame: RGB 格式图像
     :return: 亮度平均值 (0.0 - 255.0)，如果图像无效则返回 None
     """
     if frame is None:
         return None
 
-    # 1. 将 BGR 转换为 HSV
-    # OpenCV 默认 BGR，转换到 HSV 后，通道顺序为 H(0), S(1), V(2)
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
 
     # 2. 提取 V 通道 (亮度/明度)
     v_channel = hsv[:, :, 2]
@@ -125,6 +123,9 @@ def in_polygon(point, polygon_points):
     :param polygon_points: list[tuple]，多边形顶点坐标 [(x, y), ...]
     :return: list[np.ndarray]，过滤后的检测结果，格式与输入相同
     """
+    if not polygon_points:
+        return False
+
     if len(polygon_points) == 2:
         # 两点模式 → 转换成矩形 Polygon
         (x1, y1), (x2, y2) = polygon_points

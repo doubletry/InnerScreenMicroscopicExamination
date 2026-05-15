@@ -120,6 +120,33 @@ class ConfigurationPanel(QWidget):
 
         param_configuration_group_layout.addRow("保存片段", save_clip_checkbox)
 
+        request_timeout_input = QDoubleSpinBox()
+        request_timeout_input.setObjectName("request_timeout_seconds")
+        request_timeout_input.setRange(0.1, 60)
+        request_timeout_input.setSingleStep(0.1)
+        request_timeout_input.setValue(
+            self.load_setting(request_timeout_input.objectName(), 3.0, float)
+        )
+        request_timeout_input.valueChanged.connect(
+            lambda value: self.save_setting(request_timeout_input.objectName(), value)
+        )
+        param_configuration_group_layout.addRow(
+            "请求超时时间（秒）：", request_timeout_input
+        )
+
+        max_clip_frames_input = QSpinBox()
+        max_clip_frames_input.setObjectName("max_clip_frames")
+        max_clip_frames_input.setRange(1, 300)
+        max_clip_frames_input.setValue(
+            self.load_setting(max_clip_frames_input.objectName(), 24, int)
+        )
+        max_clip_frames_input.valueChanged.connect(
+            lambda value: self.save_setting(max_clip_frames_input.objectName(), value)
+        )
+        param_configuration_group_layout.addRow(
+            "动作片段最大帧数：", max_clip_frames_input
+        )
+
         layout.addWidget(server_configuration_group)
         layout.addWidget(param_configuration_group)
 

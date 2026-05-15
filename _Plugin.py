@@ -1,24 +1,14 @@
 import os
 import os.path as osp
-import sys
-from collections import deque
-from datetime import datetime
 
-import cv2
 import numpy as np
 from hummingbirdai.logger_config import logger
 from hummingbirdai.plugins import PluginBase
 from hummingbirdai.ui import logoer
-from hummingbirdai.widgets import AlarmToast, EventListWidget
-from PySide6.QtCore import (Property, QPropertyAnimation, QRect, QSettings, Qt,
-                            QTimer, Signal, Slot)
-from PySide6.QtGui import (QAction, QBrush, QColor, QFont, QFontMetrics,
-                           QImage, QPainter, QPen, QPixmap)
-from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QGroupBox,
-                               QHBoxLayout, QLabel, QMessageBox, QPushButton,
-                               QSlider, QStyle, QStyleOptionSlider, QTextEdit,
-                               QVBoxLayout, QWidget)
+from hummingbirdai.widgets import AlarmToast
+from PySide6.QtCore import Qt, Slot
+from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QPainter, QPixmap
+from PySide6.QtWidgets import QDialog, QMessageBox, QVBoxLayout
 
 from ._Display import DisplayWidget
 from ._Setting import ConfigurationPanel
@@ -26,7 +16,7 @@ from ._SideBar import SidebarStatusWidget
 from ._util import get_package_name, get_v_channel_brightness
 from ._version import (__version__, compatibility, department, description,
                        organization, year)
-from .core import InnerScreenMicroscopicExaminationClient
+from .core import InnerScreenMicroscopicExaminationClient, copy_stable_frame
 
 current_file_path = os.path.abspath(__file__)  # 当前文件的绝对路径
 current_dir = os.path.dirname(current_file_path)  # 当前文件所在目录
@@ -111,63 +101,6 @@ def create_pixmap(
     return pixmap
 
 
-class FrameEventSmoother:
-    """
-    帧事件平滑器：
-    - 将每次 record 调用视为一帧
-    - 只统计最近 window_frames 帧内的事件
-    - 若某事件在窗口内出现次数 >= threshold_frames，则在当前帧返回该事件
-    """
-
-    def __init__(self, window_frames: int, threshold_frames: int) -> None:
-        """
-        :param threshold_frames: 触发阈值（窗口内至少出现多少帧的该事件）
-        :param window_frames: 时间窗大小（按帧计）
-        """
-        self.threshold_frames = threshold_frames
-        self.window_frames = window_frames
-
-        self.init_queue()
-
-    def record(self, event_key: str) -> str | None:
-        """
-        记录当前帧发生的事件，并判断是否“触发”。
-
-        :param event_key: 当前帧的事件（str）
-        :return: 若该事件在最近 window_frames 帧中出现次数 >= threshold_frames，
-                 则返回 event_key，否则返回 None
-        """
-        # 1. 将当前事件放入窗口
-        self._window.append(event_key)
-        self._counts[event_key] = self._counts.get(event_key, 0) + 1
-        # 2. 若窗口长度超过 window_frames，则移除最旧的一帧
-        if len(self._window) > self.window_frames:
-            old_event = self._window.popleft()
-            self._counts[old_event] -= 1
-            if self._counts[old_event] == 0:
-                del self._counts[old_event]
-
-        # 3. 判断当前事件在窗口内的出现次数是否达到阈值
-        if self._counts.get(event_key, 0) >= self.threshold_frames:
-            return event_key
-        return None
-
-    def init_queue(self):
-        # 最近 window_frames 帧的事件序列
-        self._window: deque[str] = deque()
-        # 当前窗口内各事件出现次数
-        self._counts: dict[str, int] = {}
-
-    def clear(self):
-        self.init_queue()
-
-    def set_threshold_frames(self, threshold_frames: int):
-        self.threshold_frames = threshold_frames
-
-    def set_window_frames(self, window_frames: int):
-        self.window_frames = window_frames
-
-
 class Plugin(PluginBase):
     def __init__(self):
         # 插件基础信息
@@ -190,15 +123,6 @@ class Plugin(PluginBase):
         self.client = InnerScreenMicroscopicExaminationClient(self.settings)
         self.result_list_widget = SidebarStatusWidget(self.main_window)
         self.request_id2relativetime_map = {}
-
-        sampling_window = self.settings.value("sampling_window", 15, type=int)
-        anomaly_count = self.settings.value("anomaly_count", 5, type=int)
-        self.smoother = FrameEventSmoother(sampling_window, anomaly_count)
-
-        # 上下模状态
-        self._mold_ok_count = 0
-        self._mold_ng_count = 0
-        self._mold_currend_state = None
 
     def get_name(self):
         return self.name
@@ -250,10 +174,6 @@ class Plugin(PluginBase):
 
         dialog.setWindowTitle("配置参数")
         dialog.exec()  # 会非阻塞地显示对话框
-
-        sampling_window = self.settings.value("sampling_window", 15, type=int)
-        anomaly_count = self.settings.value("anomaly_count", 5, type=int)
-        self.smoother = FrameEventSmoother(sampling_window, anomaly_count)
 
     def get_sidebar_widget(self):
         """返回侧边栏widget"""
@@ -402,32 +322,17 @@ class Plugin(PluginBase):
 
     @Slot(np.ndarray, float)
     def on_frame_received(self, frame_data: np.ndarray, timestamp: float):
-        # self.client.play_result()
-
         if not self.start_action.isChecked():
             return
 
-        if get_v_channel_brightness(frame_data) < self.settings.value(
+        frame = copy_stable_frame(frame_data)
+        if get_v_channel_brightness(frame) < self.settings.value(
             "brighten_conf", 64, type=int
         ):  # 如果画面过暗，可能是视频结束的黑屏，直接返回不处理
             return
 
-        request_id = self.client.handle_image(frame_data)
+        request_id = self.client.handle_image(frame, timestamp=timestamp)
         self.request_id2relativetime_map[request_id] = timestamp
-        pass
-
-    # @Slot(np.ndarray, float)
-    # def on_frame_received(self, frame_data: np.ndarray, timestamp: float):
-    #     """接收到帧数据时调用"""
-
-    #     if not self.start_action.isChecked():
-    #         return
-    #     # 如果插件不活跃，直接返回
-    #     if not self.is_active:
-    #         return
-
-    #     request_id = self.client.handle_image(frame_data)
-    # self.request_id2relativetime_map[request_id] = timestamp
 
     @Slot(bytes, list, list)
     def on_segment_received(self, segment_data, frames, timestamps):
