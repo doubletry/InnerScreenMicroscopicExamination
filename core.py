@@ -1,124 +1,173 @@
 import os
 import os.path as osp
 import queue
-import random
-import re
 import secrets
-import string
 import threading
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
+from dataclasses import dataclass, field
+from typing import Any, Optional
 
-import av
 import cv2
-import grpc
 import numpy as np
-from dateutil.parser import parse
-from hummingbirdai.grpc import base_pb2
-from hummingbirdai.grpc.core import (ClientBase, DetectionClient,
-                                     UploadImageClient,
-                                     VideoClassificationClient)
-from hummingbirdai.multimedia import FrameSampler
-from hummingbirdai.ui import get_path
+from hummingbirdai.grpc.core import (
+    ClientBase,
+    DetectionClient,
+    UploadImageClient,
+    VideoClassificationClient,
+)
 from loguru import logger
-from PySide6.QtCore import (QObject, QPoint, QSettings, Qt, QThread, QTimer,
-                            Signal, Slot)
+from PySide6.QtCore import QObject, QPoint, QSettings, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
-from turbojpeg import TurboJPEG
 
-from ._util import (ObjectState, ResultState, StateTracker,
-                    get_v_channel_brightness, in_polygon)
+from ._util import ObjectState, ResultState, StateTracker, get_v_channel_brightness, in_polygon
 
 IMAGE_MODEL_NAME = ""
-
 MOLD_DETECTION_MODEL_NAME = "上下模检测"
 ACTION_MODEL_NAME = "内屏镜检"
+MATERIAL_EMPTY_BOX_ID = 6
+MATERIAL_PRESENT_BOX_ID = 7
 
-TURBO_JPEG_DLL = get_path("dlls/libturbojpeg.dll")
-
-jpeg = TurboJPEG(TURBO_JPEG_DLL)
-current_file_path = os.path.abspath(__file__)  # 当前文件的绝对路径
-current_dir = os.path.dirname(current_file_path)  # 当前文件所在目录
+current_dir = os.path.dirname(os.path.abspath(__file__))
 
 
 def get_machine_unique_id():
-    # 基于 MAC 地址 + 时间戳生成 UUID
-    # 如果只需要完全固定的ID，可以直接用 MAC 地址
-    mac = uuid.getnode()
-    return str(uuid.uuid5(uuid.NAMESPACE_DNS, str(mac)))
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, str(uuid.getnode())))
+
+
+def copy_stable_frame(frame: np.ndarray) -> np.ndarray:
+    """Return an owned C-contiguous RGB copy to avoid async buffer reuse issues.
+
+    复制一份连续内存的 RGB 图像，避免上游复用帧缓冲区导致异步读写串帧。
+    """
+    return np.array(frame, copy=True, order="C")
 
 
 def compute_iou(box1, box2):
-    """
-    计算两个矩形框的 IoU (Intersection over Union)
-
-    参数:
-        box1, box2: tuple 或 list，格式为 (x1, y1, x2, y2)
-            (x1, y1) 为左上角坐标
-            (x2, y2) 为右下角坐标
-
-    返回:
-        iou: float，两个框的 IoU 值
-    """
-
     if not box1 or not box2:
-        return 0
+        return 0.0
 
     x1_min, y1_min, x1_max, y1_max = box1
     x2_min, y2_min, x2_max, y2_max = box2
-
-    # 计算交集矩形的左上角和右下角坐标
     inter_x_min = max(x1_min, x2_min)
     inter_y_min = max(y1_min, y2_min)
     inter_x_max = min(x1_max, x2_max)
     inter_y_max = min(y1_max, y2_max)
-
-    # 计算交集区域的宽和高
-    inter_w = max(0, inter_x_max - inter_x_min)
-    inter_h = max(0, inter_y_max - inter_y_min)
-
-    # 交集面积
-    inter_area = inter_w * inter_h
-
-    # 各自面积
+    inter_area = max(0, inter_x_max - inter_x_min) * max(0, inter_y_max - inter_y_min)
     area1 = max(0, x1_max - x1_min) * max(0, y1_max - y1_min)
     area2 = max(0, x2_max - x2_min) * max(0, y2_max - y2_min)
-
-    # 并集面积
     union_area = area1 + area2 - inter_area
-
-    # 防止除零
-    if union_area == 0:
-        return 0.0
-
-    iou = inter_area / union_area
-    return iou
+    return inter_area / union_area if union_area else 0.0
 
 
-def generate_random_str(length=10):
-    # 字符集：字母 + 数字
-    chars = string.ascii_letters + string.digits
-    # random.sample 返回一个长度为 length 的唯一字符列表
-    return "".join(random.sample(chars, length))
+@dataclass
+class FrameRecord:
+    """Complete context for one frame in the asynchronous pipeline.
+
+    Upload, detection, and action recognition are returned asynchronously by
+    different threads/services. sequence_index is the primary ordering key used
+    to keep the input frame, service responses, and final display result for the
+    same frame together before ordered processing.
+
+    单帧在异步流水线中的完整上下文。
+    上传、检测和动作识别分别由不同线程/服务异步返回。该对象以
+    sequence_index 为主键把同一帧的输入、服务响应和最终显示结果集中管理，
+    便于后续按帧序推进处理，避免服务响应先后顺序影响业务时序。
+    """
+
+    sequence_index: int
+    request_id: str
+    timestamp: Optional[float]
+    image: np.ndarray
+    created_at: float = field(default_factory=time.monotonic)
+    upload_resp: Any = None
+    upload_key: Optional[str] = None
+    detection_resp: Any = None
+    action_resp: Any = None
+    action_submitted: bool = False
+    action_submitted_at: Optional[float] = None
+    detection_processed: bool = False
+    output_ready: bool = False
+    skipped: bool = False
+    pixmap: Optional[QPixmap] = None
+    mold_transition_state: ObjectState = ObjectState.DISAPPEARED
+    mold_status: ResultState = ResultState.PENDING
 
 
-def save_segments(images, roi, root):
+class ActionClipBuffer:
+    """Frame-ordered cache for one action-recognition clip.
 
-    dirname = generate_random_str(12)
-    full_dirname = osp.join(root, dirname)
+    Upload keys are cached in frame order while material remains present, then
+    submitted to VideoClassificationClient once the material explicitly
+    disappears. Image saving and service requests may be consumed on different
+    threads, so frame images are copied immediately when appended.
+
+    动作识别片段缓存。
+    物料持续出现期间按帧序缓存上传后的图片 key；物料明确消失时一次性提交给
+    VideoClassificationClient。保存图片与服务请求可能在不同线程消费，因此缓存
+    本地图片时立即复制，保证片段内容不受后续帧复用影响。
+    """
+
+    def __init__(self, max_frames: int):
+        self.max_frames = max(1, max_frames)
+        self.upload_keys: deque[str] = deque()
+        self.frame_images: deque[tuple[int, np.ndarray]] = deque()
+
+    def clear(self):
+        self.upload_keys.clear()
+        self.frame_images.clear()
+
+    def append(self, sequence_index: int, upload_key: str, image: np.ndarray):
+        """Append one uploaded frame to the clip in frame order.
+
+        sequence_index 用于保持片段帧序；upload_key 是服务端缓存图片的标识；
+        image 是当前帧的 RGB 图像数据。
+        """
+        if len(self.upload_keys) >= self.max_frames:
+            self.upload_keys.popleft()
+            self.frame_images.popleft()
+        self.upload_keys.append(upload_key)
+        self.frame_images.append((sequence_index, copy_stable_frame(image)))
+
+    def upload_keys_in_order(self) -> list[str]:
+        return list(self.upload_keys)
+
+    def frame_images_in_order(self) -> list[tuple[int, np.ndarray]]:
+        return list(self.frame_images)
+
+    def __len__(self):
+        return len(self.upload_keys)
+
+
+def save_segments(
+    images: list[tuple[int, np.ndarray]],
+    material_area_points: list[tuple[int, int]],
+    root_dir: str,
+):
+    """Save an action clip to disk in sequence_index order.
+
+    按 sequence_index 顺序保存动作片段图片；文件名使用零填充序号，确保文件系统
+    排序与视频帧序一致。material_area_points 为物料区域点列表，裁剪时使用
+    前两个点；少于两个点时保存完整画面；root_dir 为保存根目录。
+    """
+    dirname = secrets.token_hex(6)
+    full_dirname = osp.join(root_dir, dirname)
     os.makedirs(full_dirname, exist_ok=True)
 
-    xmin = min(roi[0][0], roi[1][0])
-    xmax = max(roi[0][0], roi[1][0])
-    ymin = min(roi[0][1], roi[1][1])
-    ymax = max(roi[0][1], roi[1][1])
+    h, w = images[0][1].shape[:2] if images else (0, 0)
+    xmin, xmax, ymin, ymax = 0, w, 0, h
+    if len(material_area_points) >= 2:
+        xmin = min(material_area_points[0][0], material_area_points[1][0])
+        xmax = max(material_area_points[0][0], material_area_points[1][0])
+        ymin = min(material_area_points[0][1], material_area_points[1][1])
+        ymax = max(material_area_points[0][1], material_area_points[1][1])
 
-    for i, image in enumerate(images):
-        image_path = osp.join(full_dirname, f"{i}.jpg")
-
-        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)[ymin:ymax, xmin:xmax]
-        cv2.imwrite(image_path, image)
+    for sequence_index, image in images:
+        # Zero-padding keeps filesystem order identical to frame order.
+        image_path = osp.join(full_dirname, f"{sequence_index:08d}.jpg")
+        image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(image_path, image_bgr[ymin:ymax, xmin:xmax])
 
     logger.info(f"保存分割图片成功，共{len(images)}张，保存到{full_dirname}")
 
@@ -134,71 +183,78 @@ def backend_save_segments(image_queue: queue.Queue, root):
         if data is None:
             break
 
-        images = data["images"]
-        roi = data["roi"]
-        logger.debug(f"获取到分割图片，共{len(images)}张")
+        try:
+            save_segments(data["images"], data["roi"], root)
+        except Exception:
+            logger.exception("保存分割图片失败")
 
-        save_segments(images, roi, root)
-
-    logger.info(f"退出保存结果线程")
+    logger.info("退出保存结果线程")
 
 
 class InnerScreenMicroscopicExaminationClient(QObject):
-    """内屏镜检动作检测"""
+    """内屏镜检动作检测。内部保证异步响应按帧序处理。"""
 
     resultsReady = Signal(dict)
     imageReady = Signal(QPixmap)
 
     def __init__(self, settings: QSettings, parent=None):
         super().__init__(parent)
-        self.results = OrderedDict()
-        self.threads = []  # [(thread, client_obj), ...]
-        # 三个子客户端
         self._settings = settings
         self.client_id = get_machine_unique_id()
+        self.results = OrderedDict()
+        self.threads: list[tuple[QThread, ClientBase]] = []
         self.image_queue = queue.Queue(1000)
+        self._save_segments_threading: Optional[threading.Thread] = None
 
-        self._frame_index = -1
-        self.frame_sampler = FrameSampler()
+        self._sequence_index = -1
+        self._records_by_request_id: dict[str, FrameRecord] = {}
+        self._records_by_sequence: dict[int, FrameRecord] = {}
+        self._next_detection_sequence = 0
+        self._next_output_sequence = 0
 
-        self._upload_image_count = 0
-        self._upload_image_keys = []
-        self._upload_image_list = []
-        self._upload_image_keys_len = 24
-        self._action_request_id = []
+        self._material_tracker = StateTracker()
+        self._mold_tracker = StateTracker()
+        self._clip_buffer = ActionClipBuffer(self._max_clip_frames())
+        self._action_result_queue: deque[ResultState] = deque()
         self._current_action = ResultState.PENDING
-
-        self._action_state_tracker = StateTracker()
-        self._action_state = None
-
+        self._mold_status = ResultState.PENDING
         self._ok_count = 0
         self._total_count = 0
 
-        self._state_tracker = StateTracker()
+        self._drain_timer = QTimer(self)
+        self._drain_timer.setInterval(200)
+        self._drain_timer.timeout.connect(self._on_drain_timer)
 
-        self._action_result_queue = []
-        self._mold_status = ResultState.PENDING
+    def _request_timeout_seconds(self) -> float:
+        timeout_msecs = self._settings.value("request_timeout_msecs", 3000, type=int)
+        return timeout_msecs / 1000.0
+
+    def _max_clip_frames(self) -> int:
+        return self._settings.value("max_clip_frames", 24, type=int)
 
     def clear_image_queue(self):
+        self._reset_runtime_state()
 
+    def _reset_runtime_state(self):
         self.results = OrderedDict()
+        self._records_by_request_id.clear()
+        self._records_by_sequence.clear()
+        self._next_detection_sequence = self._sequence_index + 1
+        self._next_output_sequence = self._sequence_index + 1
+        self._material_tracker.reset()
+        self._mold_tracker.reset()
+        self._clip_buffer = ActionClipBuffer(self._max_clip_frames())
+        self._action_result_queue.clear()
+        self._current_action = ResultState.PENDING
+        self._mold_status = ResultState.PENDING
+        self._ok_count = 0
+        self._total_count = 0
 
     def init_client(self):
         try:
-
-            self.upload_image_client = UploadImageClient(
-                self.client_id, IMAGE_MODEL_NAME
-            )
-
-            self.mold_detection_client = DetectionClient(
-                self.client_id, MOLD_DETECTION_MODEL_NAME
-            )
-
-            self.action_client = VideoClassificationClient(
-                self.client_id, ACTION_MODEL_NAME
-            )
-
-            # 绑定结果信号
+            self.upload_image_client = UploadImageClient(self.client_id, IMAGE_MODEL_NAME)
+            self.mold_detection_client = DetectionClient(self.client_id, MOLD_DETECTION_MODEL_NAME)
+            self.action_client = VideoClassificationClient(self.client_id, ACTION_MODEL_NAME)
 
             self.upload_image_client.resultReady.connect(self._on_image_result)
             self.mold_detection_client.resultReady.connect(self.on_mold_detection)
@@ -208,386 +264,495 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             image_port = self._settings.value("image_port", 50050, type=int)
             detection_port = self._settings.value("detection_port", 50051, type=int)
             action_port = self._settings.value("action_port", 50059, type=int)
-
             if not host or not image_port or not detection_port or not action_port:
                 return False
-
-            # 初始化连接
 
             self.upload_image_client.init_client((host, image_port))
             self.mold_detection_client.init_client((host, detection_port))
             self.action_client.init_client((host, action_port))
-
             return True
-        except:
+        except Exception:
             logger.exception("初始化异常")
             return False
 
     def start(self):
-        """启动三个客户端的连接和预测线程"""
+        if self.threads:
+            logger.warning(f"{self.__class__.__name__} 已启动，忽略重复启动")
+            return
         logger.info(f"启动 {self.__class__.__name__}")
-
+        self.image_queue = queue.Queue(1000)
+        self._clip_buffer = ActionClipBuffer(self._max_clip_frames())
         self._start_client_thread(self.upload_image_client)
         self._start_client_thread(self.mold_detection_client)
         self._start_client_thread(self.action_client)
-
         self._save_segments_threading = threading.Thread(
             target=backend_save_segments,
             args=(self.image_queue, osp.join(current_dir, "history")),
         )
         self._save_segments_threading.start()
+        self._drain_timer.start()
 
     def _start_client_thread(self, client_obj: ClientBase):
-        t = QThread()
-        client_obj.moveToThread(t)
-        t.started.connect(client_obj.predict_unary)
-        t.start()
-        self.threads.append((t, client_obj))
+        thread = QThread()
+        client_obj.moveToThread(thread)
+        thread.started.connect(client_obj.predict_unary)
+        thread.start()
+        self.threads.append((thread, client_obj))
 
     def stop(self):
-        """停止所有子客户端"""
         logger.info(f"停止 {self.__class__.__name__}")
-        for t, client_obj in self.threads:
-            t: QThread
-            client_obj: ClientBase
+        self._drain_timer.stop()
+        for thread, client_obj in self.threads:
             client_obj.stop()
-        for t, client_obj in self.threads:
-            t.quit()
-            t.wait()
+        for thread, _ in self.threads:
+            thread.quit()
+            thread.wait()
         self.threads.clear()
+        if self._save_segments_threading and self._save_segments_threading.is_alive():
+            self.image_queue.put(None)
+            self._save_segments_threading.join(timeout=5)
+            if self._save_segments_threading.is_alive():
+                logger.warning("保存结果线程未能在超时时间内退出")
 
-        self.image_queue.put(None)
-        self._upload_image_keys = []
-        self._upload_image_list = []
-
-    def handle_image(self, image, image_encode=None, request_id=None):
-        """
-        外部推送一帧图像到ImageClient
-        :param image: numpy RGB 图像
-        :param image_encode: JPEG编码好的数据（可选）
-        :param request_id: 请求ID（可选，不传则生成）
-        """
+    def handle_image(self, image, image_encode=None, request_id=None, timestamp=None):
         if request_id is None:
             request_id = secrets.token_hex(4)
 
-        self.results.setdefault(request_id, {})["image"] = image
+        # 入口处立即获得独立帧副本：后续上传、检测、显示都以该记录为准，
+        # 不再直接引用宿主程序可能复用的帧缓冲区。
+        owned_image = copy_stable_frame(image)
+        self._sequence_index += 1
+        record = FrameRecord(
+            sequence_index=self._sequence_index,
+            request_id=request_id,
+            timestamp=timestamp,
+            image=owned_image,
+        )
+        self._records_by_request_id[request_id] = record
+        self._records_by_sequence[record.sequence_index] = record
+        self.results.setdefault(request_id, {})["image"] = owned_image
 
+        # 上传线程和本地记录生命周期不同，上传前再复制一份，避免客户端内部异步
+        # 读取时与本地绘制/保存共享同一块 numpy 内存。
+        upload_image = copy_stable_frame(owned_image)
         self.upload_image_client.add_input_item(
-            {"request_id": request_id, "image": image, "image_encode": image_encode}
+            {"request_id": request_id, "image": upload_image, "image_encode": image_encode}
         )
         return request_id
 
     @Slot(object, object)
     def _on_image_result(self, request_id, resp):
-        self.results.setdefault(request_id, {})["upload"] = resp
-        self._upload_image_count += 1
-        key = resp.cache_metas[0].key
+        record = self._records_by_request_id.get(request_id)
+        if record is None or record.skipped:
+            logger.warning(f"收到未知或已跳过的上传结果: {request_id}")
+            return
 
+        record.upload_resp = resp
+        self.results.setdefault(request_id, {})["upload"] = resp
+        if not getattr(resp, "cache_metas", None):
+            logger.warning(f"上传结果缺少缓存 key: {request_id}")
+            return
+
+        record.upload_key = resp.cache_metas[0].key
         self.mold_detection_client.add_input_item(
-            {
-                "request_id": request_id,
-                "image": None,
-                "key": [key],
-            }
+            {"request_id": request_id, "image": None, "key": [record.upload_key]}
         )
+        self._drain_detection_in_order()
 
     @Slot(object, object)
     def on_mold_detection(self, request_id, resp):
+        record = self._records_by_request_id.get(request_id)
+        if record is None or record.skipped:
+            logger.warning(f"收到未知或已跳过的检测结果: {request_id}")
+            return
+
+        record.detection_resp = resp
         self.results.setdefault(request_id, {})["detection"] = resp
+        self._drain_detection_in_order()
 
-        h, w, _ = self.results[request_id]["image"].shape
-        material_area_points = self._settings.value(
-            "material/points",
-            [],
-            type=list,
-        )
+    @Slot(object, object)
+    def on_action_recognition(self, request_id, resp):
+        record = self._records_by_request_id.get(request_id)
+        if record is None or record.skipped:
+            logger.warning(f"收到未知或已跳过的动作识别结果: {request_id}")
+            return
 
-        material_area = []
+        record.action_resp = resp
+        if record.detection_processed:
+            record.output_ready = True
+        self._drain_ready_outputs()
 
-        if material_area_points:
-            for point in material_area_points[0]:
-                material_area.append(
-                    (
-                        int(point[0] * w),
-                        int(point[1] * h),
-                    )
-                )
+    def _on_drain_timer(self):
+        self._drain_detection_in_order()
+        self._drain_ready_outputs()
 
-        box_material = []
+    def _is_expired(self, record: FrameRecord) -> bool:
+        return time.monotonic() - record.created_at >= self._request_timeout_seconds()
 
-        if material_area:
-            box_material = [
-                material_area[0][0],
-                material_area[0][1],
-                material_area[1][0],
-                material_area[1][1],
-            ]
+    def _is_action_expired(self, record: FrameRecord) -> bool:
+        action_started_at = record.action_submitted_at or record.created_at
+        return time.monotonic() - action_started_at >= self._request_timeout_seconds()
 
-        if resp.results:
-            for box in resp.results[0].boxes:
-                if box.id not in [6, 7]:  # 如果不是物料的两个框，则跳过
-                    continue
+    def _drain_detection_in_order(self):
+        """Process detection results strictly by sequence_index.
 
-                box_coord = [box.x_min, box.y_min, box.x_max, box.y_max]
-                if (
-                    compute_iou(box_coord, box_material) < 0.3
-                ):  # 如果物料框和检测框的iou小于0.3，则跳过
-                    continue
+        gRPC responses may arrive out of order, so this method only consumes
+        the frame pointed to by _next_detection_sequence. If that frame has no
+        detection result before the configured timeout, it is skipped so later
+        completed frames are not blocked forever.
 
-                if box.id == 7:  # material undo
-                    self._action_state = self._action_state_tracker.appear()
-                elif box.id == 6:
-                    self._action_state = self._action_state_tracker.disappear()
-
+        按 sequence_index 顺序处理检测结果。
+        gRPC 响应可能乱序返回，因此这里只消费 _next_detection_sequence 指向的帧。
+        如果该帧迟迟没有检测结果，则在配置的超时时间后跳过它，避免后续
+        已完成的帧被永久阻塞。
+        """
+        while True:
+            record = self._records_by_sequence.get(self._next_detection_sequence)
+            if record is None:
                 break
 
-        if self._action_state == ObjectState.APPEARED:
-            upload_resp = self.results[request_id]["upload"]
-            key = upload_resp.cache_metas[0].key
-            if len(self._upload_image_keys) >= self._upload_image_keys_len:
-                self._upload_image_keys.pop(0)
-                self._upload_image_list.pop(0)
+            if record.detection_resp is None:
+                if self._is_expired(record):
+                    self._skip_record(record, "等待上传/检测结果超时")
+                    self._next_detection_sequence += 1
+                    continue
+                break
 
-            self._upload_image_keys.append(key)
-            self._upload_image_list.append(self.results[request_id]["image"])
+            self._process_detection_record(record)
+            self._next_detection_sequence += 1
 
-        elif self._action_state == ObjectState.DISAPPEARING:
-            request = {
-                "request_id": request_id,
-                "sequences_keys": [self._upload_image_keys],
-                "sequences_rois": [[material_area for _ in self._upload_image_keys]],
-            }
+        self._drain_ready_outputs()
 
-            self.action_client.add_input_item(request)
+    def _skip_record(self, record: FrameRecord, reason: str):
+        """Drop an unusable frame and remove all indexes for late responses.
 
-            save_clip = self._settings.value("save_clip", False, type=bool)
+        All indexes are cleaned synchronously so an old asynchronous response
+        cannot be matched again or emitted after this frame has been skipped.
 
-            if save_clip:
-                try:
-                    self.image_queue.put_nowait(
-                        {
-                            "images": self._upload_image_list,
-                            "roi": material_area,
-                        }
-                    )
-                except queue.Full:
-                    logger.exception("保存图片失败")
+        跳过无法继续处理的帧，并同步清理所有索引，防止旧响应再次参与输出。
+        """
+        record.skipped = True
+        logger.warning(
+            f"跳过帧 seq={record.sequence_index}, request_id={record.request_id}: {reason}"
+        )
+        self._records_by_request_id.pop(record.request_id, None)
+        self._records_by_sequence.pop(record.sequence_index, None)
+        self.results.pop(record.request_id, None)
+        self._advance_output_sequence_past_gaps()
 
-            self._action_request_id.append(request_id)
-            self._upload_image_keys = []
-            self._upload_image_list = []
+    def _advance_output_sequence_past_gaps(self):
+        """Advance output cursor across already-removed sequence gaps.
 
-            self._action_state_tracker.reset()
-            self._action_state = None
+        Some frames may be removed early after timing out. If the output cursor
+        lands on one of those gaps, later completed frames would be blocked.
+        This helper advances only across sequence numbers that have already
+        appeared, so future frames are never mistaken as skipped.
 
-        self._try_emit(request_id)
-
-    def on_action_recognition(self, request_id, resp):
-        self.results.setdefault(request_id, {})["action"] = resp
-        self._try_emit(request_id)
-
-    def _try_emit(self, request_id):
-
-        if (
-            request_id in self._action_request_id
-            and "action" not in self.results[request_id]
-        ):
+        某些帧会因超时被跳过并提前从索引中删除；如果当前输出游标正好落在这些
+        缺口上，后续已完成的帧会被错误阻塞。这里只在序号已经出现过的前提下
+        跨过缺口，避免把未来尚未进入流水线的帧误判为已跳过。
+        """
+        if self._next_output_sequence > self._sequence_index:
+            logger.warning(
+                "Output cursor exceeded received sequence range / "
+                f"输出游标超过已接收帧范围: next={self._next_output_sequence}, "
+                f"max_seen={self._sequence_index}"
+            )
             return
 
-        if "detection" not in self.results[request_id]:
+        if self._next_output_sequence in self._records_by_sequence:
             return
 
-        # 求上下模区域
-        h, w, _ = self.results[request_id]["image"].shape
-        mold_area_points = self._settings.value("mold/points", [], type=list)
-
-        mold_area = []
-
-        if mold_area_points:
-            for point in mold_area_points[0]:
-                mold_area.append(
-                    (
-                        int(point[0] * w),
-                        int(point[1] * h),
-                    )
-                )
-
-        data = self.results.pop(request_id)
-
-        detection_resp = data["detection"]
-
-        # 过滤上下模区域内的物体
-        face_a = None
-        face_c = None
-        for box in detection_resp.results[0].boxes:
-            center_x = (box.x_min + box.x_max) / 2
-            center_y = (box.y_min + box.y_max) / 2
-            if not in_polygon((center_x, center_y), mold_area):
-                continue
-
-            if box.id == 0:
-                face_a = box
-            elif box.id == 2:
-                face_c = box
-
-        if not face_a or not face_c:
-            # 上下模不存在
-            color = QColor(0, 0, 255)
-
-            if not face_a and not face_c:
-                state = self._state_tracker.disappear()
-            else:
-                state = self._state_tracker.appear()
-
-        elif face_a.y_min < face_c.y_min:
-            # 上下模位置错误
-            color = QColor(255, 0, 0)
-            state = self._state_tracker.appear()
-
-            self._mold_status = ResultState.NG
-
-        else:
-            # 上下模位置正确
-            color = QColor(0, 255, 0)
-            state = self._state_tracker.appear()
-
-            self._mold_status = ResultState.OK
-
-        pixmap = self.draw_detection_on_image(
-            data["image"], data["detection"].results[0], color
+        next_available_sequence = min(
+            (
+                sequence_index
+                for sequence_index in self._records_by_sequence
+                if sequence_index >= self._next_output_sequence
+            ),
+            default=None,
+        )
+        self._next_output_sequence = (
+            next_available_sequence
+            if next_available_sequence is not None
+            else self._sequence_index + 1
         )
 
-        data["drawn"] = pixmap
+    def _process_detection_record(self, record: FrameRecord):
+        if record.detection_processed:
+            return
 
-        # 如果有检测动作
-        if request_id in self._action_request_id:
+        # 物料状态只依据有明确匹配的物料框推进；未匹配到物料框时保持原状态，
+        # 与重构前逻辑一致，避免因为某一帧漏检而过早提交动作识别请求。
+        material_area = self._material_area(record.image)
+        material_state = self._update_material_state(record, material_area)
+        if material_state == ObjectState.APPEARED and record.upload_key:
+            self._clip_buffer.append(record.sequence_index, record.upload_key, record.image)
+        elif material_state == ObjectState.DISAPPEARING:
+            self._submit_action_clip(record, material_area)
+            self._material_tracker.reset()
 
-            action_resp = data["action"]
-            self._action_request_id.remove(request_id)
+        # 模具检测结果与动作识别结果最终都挂在同一 FrameRecord 上，后续统一按
+        # sequence_index 输出，保证 UI 显示和统计口径与视频时间线一致。
+        color, mold_state = self._update_mold_state(record)
+        record.mold_transition_state = mold_state
+        record.mold_status = self._mold_status
+        record.pixmap = self.draw_detection_on_image(record.image, self._first_detection_result(record), color)
+        record.detection_processed = True
+        record.output_ready = not record.action_submitted
 
-            if not action_resp.results:
-                return
+    def _update_material_state(self, record: FrameRecord, material_area) -> ObjectState:
+        material_box = self._box_from_area(material_area)
+        result = self._first_detection_result(record)
+        if result is None:
+            return self._material_tracker.state
 
-            if action_resp.results[0].label in ["OK", "NG"]:
-                self._current_action = (
-                    ResultState.OK
-                    if action_resp.results[0].label == "OK"
-                    else ResultState.NG
+        for box in result.boxes:
+            if box.id not in [MATERIAL_EMPTY_BOX_ID, MATERIAL_PRESENT_BOX_ID]:
+                continue
+            if compute_iou([box.x_min, box.y_min, box.x_max, box.y_max], material_box) < 0.3:
+                continue
+            if box.id == MATERIAL_PRESENT_BOX_ID:
+                return self._material_tracker.appear()
+            if box.id == MATERIAL_EMPTY_BOX_ID:
+                return self._material_tracker.disappear()
+
+        return self._material_tracker.state
+
+    def _submit_action_clip(self, record: FrameRecord, material_area):
+        if not self._clip_buffer:
+            self._clip_buffer.clear()
+            return
+
+        # VideoClassificationClient 要求 key 顺序与视频片段帧序一致；这里直接使用
+        # ActionClipBuffer 中按 sequence_index 追加的顺序，不再受异步返回顺序影响。
+        upload_keys = self._clip_buffer.upload_keys_in_order()
+        request = {
+            "request_id": record.request_id,
+            "sequences_keys": [upload_keys],
+            "sequences_rois": [[material_area for _ in upload_keys]],
+        }
+        self.action_client.add_input_item(request)
+        record.action_submitted = True
+        record.action_submitted_at = time.monotonic()
+
+        if self._settings.value("save_clip", False, type=bool):
+            try:
+                self.image_queue.put_nowait(
+                    {
+                        "images": self._clip_buffer.frame_images_in_order(),
+                        "roi": material_area,
+                    }
                 )
-                logger.debug(f"当前动作：{action_resp.results[0].label}")
+            except queue.Full:
+                logger.exception("保存图片失败")
 
-                self._action_result_queue.append(self._current_action)
+        self._clip_buffer.clear()
 
-        if self._current_action == ResultState.NG:
-            color = QColor(255, 0, 0)
+    def _update_mold_state(self, record: FrameRecord) -> tuple[QColor, ObjectState]:
+        mold_area = self._mold_area(record.image)
+        result = self._first_detection_result(record)
+        face_a = None
+        face_c = None
 
-        elif self._current_action == ResultState.OK:
-            color = QColor(0, 255, 0)
+        if result is not None:
+            for box in result.boxes:
+                center = ((box.x_min + box.x_max) / 2, (box.y_min + box.y_max) / 2)
+                if mold_area and not in_polygon(center, mold_area):
+                    continue
+                if box.id == 0:
+                    face_a = box
+                elif box.id == 2:
+                    face_c = box
 
-        else:
+        if not face_a or not face_c:
             color = QColor(0, 0, 255)
+            if not face_a and not face_c:
+                state = self._mold_tracker.disappear()
+            else:
+                state = self._mold_tracker.appear()
+        elif face_a.y_min < face_c.y_min:
+            color = QColor(255, 0, 0)
+            state = self._mold_tracker.appear()
+            self._mold_status = ResultState.NG
+        else:
+            color = QColor(0, 255, 0)
+            state = self._mold_tracker.appear()
+            self._mold_status = ResultState.OK
 
         if state == ObjectState.DISAPPEARING:
-            action_result = (
-                self._action_result_queue.pop(0)
-                if self._action_result_queue
-                else ResultState.PENDING
-            )
+            self._mold_tracker.reset()
             self._mold_status = ResultState.PENDING
 
+        return color, state
+
+    def _drain_ready_outputs(self):
+        """Emit completed frame results in video-frame order.
+
+        The output stage also advances only the frame pointed to by
+        _next_output_sequence, keeping UI refreshes, statistics, and resultsReady
+        emissions aligned with the video timeline. If action recognition was
+        submitted but exceeds the configured timeout, the frame is emitted as
+        PENDING to avoid blocking screen refresh.
+
+        按帧序输出已经准备好的结果。
+        输出阶段同样只推进 _next_output_sequence 指向的帧，确保 UI、统计和外部
+        resultsReady 信号都按视频时间线发布。若动作识别已提交但超过配置时间仍
+        未返回，则按 PENDING 输出，避免单次动作服务异常阻塞整个画面刷新。
+        """
+        while True:
+            self._advance_output_sequence_past_gaps()
+            record = self._records_by_sequence.get(self._next_output_sequence)
+            if record is None:
+                break
+
+            if record.action_submitted and not record.output_ready and self._is_action_expired(record):
+                logger.warning(
+                    "Action recognition timeout, outputting PENDING / "
+                    f"动作识别超时，按 PENDING 输出 seq={record.sequence_index}, "
+                    f"request_id={record.request_id}"
+                )
+                record.output_ready = True
+
+            if not record.output_ready:
+                break
+
+            self._emit_record(record)
+            self._records_by_sequence.pop(record.sequence_index, None)
+            self._records_by_request_id.pop(record.request_id, None)
+            self.results.pop(record.request_id, None)
+            self._next_output_sequence += 1
+
+    def _emit_record(self, record: FrameRecord):
+        action_resp = record.action_resp
+        if action_resp is not None and getattr(action_resp, "results", None):
+            label = action_resp.results[0].label
+            if label in ["OK", "NG"]:
+                self._current_action = ResultState.OK if label == "OK" else ResultState.NG
+                self._action_result_queue.append(self._current_action)
+                logger.debug(f"当前动作：{label}")
+
+        # Action results become meaningful only after one material segment ends,
+        # and statistics are updated when the mold goes from present to absent.
+        # If the result arrives earlier, keep it in the queue until the mold
+        # DISAPPEARING state consumes it for statistics and UI output.
+        # 动作识别结果只有在一个物料片段结束后才有业务意义，并且在模具从出现到
+        # 消失时更新统计；如果动作结果更早返回，就先暂存在队列中，等模具
+        # DISAPPEARING 状态消费它，再用于统计和界面输出。
+        action_result = self._current_action
+        if record.mold_transition_state == ObjectState.DISAPPEARING:
+            action_result = self._dequeue_action_result()
+            self._total_count += 1
             if action_result == ResultState.OK:
                 self._ok_count += 1
-                self._total_count += 1
-            elif action_result == ResultState.NG:
-                self._total_count += 1
-            else:
-                self._total_count += 1
-                logger.warning(f"未获取到动作结果，当前动作结果None")
-
+            elif action_result == ResultState.PENDING:
+                logger.warning("未获取到动作结果，当前动作结果None")
             logger.info(
                 f"当前已做{self._total_count}, 一次通过率为{100 * self._ok_count / self._total_count:.2f}"
             )
-            self._state_tracker.reset()
             self._current_action = ResultState.PENDING
+        elif self._action_result_queue:
+            action_result = self._action_result_queue[0]
 
-        else:
-            action_result = (
-                self._action_result_queue[0]
-                if self._action_result_queue
-                else ResultState.PENDING
-            )
-
-        data["result"] = {
-            "total": self._total_count,
-            "ok": self._ok_count,
-            "current_action": action_result,
-            "current_mold": self._mold_status,
+        data = {
+            "image": record.image,
+            "upload": record.upload_resp,
+            "detection": record.detection_resp,
+            "action": record.action_resp,
+            "drawn": record.pixmap,
+            "result": {
+                "total": self._total_count,
+                "ok": self._ok_count,
+                "current_action": action_result,
+                "current_mold": record.mold_status,
+            },
         }
+        emitted_action_result = action_result
+        self.resultsReady.emit({"request_id": record.request_id, "resp": data})
 
-        self.resultsReady.emit({"request_id": request_id, "resp": data})
+        # record.pixmap 已包含检测框；这里仅叠加动作识别文字，保持绘制职责清晰。
+        pixmap = record.pixmap or self.draw_detection_on_image(record.image, None, QColor(0, 0, 255))
+        color = self._action_color(emitted_action_result)
+        text = f"内屏镜检撕膜：{self._action_text(emitted_action_result)}, 亮度:{get_v_channel_brightness(record.image):.1f}"
+        self.imageReady.emit(self.draw_action_on_pixmap(pixmap, (10, 50), text, color))
 
-        if self._current_action == ResultState.OK:
-            action_text = "OK"
-        elif self._current_action == ResultState.NG:
-            action_text = "NG"
-        else:
-            action_text = "PENDING"
+    def _dequeue_action_result(self) -> ResultState:
+        if self._action_result_queue:
+            return self._action_result_queue.popleft()
+        return ResultState.PENDING
 
-        text = f"内屏镜检撕膜：{action_text}, 明度:{get_v_channel_brightness(data['image']):.1f}"
+    def _first_detection_result(self, record: FrameRecord):
+        if record.detection_resp is None or not getattr(record.detection_resp, "results", None):
+            return None
+        return record.detection_resp.results[0]
 
-        pixmap = self.draw_action_on_pixmap(pixmap, (10, 50), text, color)
+    def _mold_area(self, image: np.ndarray):
+        return self._scaled_area(self._settings.value("mold/points", [], type=list), image)
 
-        self.imageReady.emit(pixmap)
+    def _material_area(self, image: np.ndarray):
+        return self._scaled_area(self._settings.value("material/points", [], type=list), image)
+
+    def _scaled_area(self, points_value, image: np.ndarray):
+        h, w, _ = image.shape
+        area = []
+        if points_value:
+            for point in points_value[0]:
+                area.append((int(point[0] * w), int(point[1] * h)))
+        return area
+
+    def _box_from_area(self, area):
+        if len(area) < 2:
+            return None
+        return [
+            min(area[0][0], area[1][0]),
+            min(area[0][1], area[1][1]),
+            max(area[0][0], area[1][0]),
+            max(area[0][1], area[1][1]),
+        ]
+
+    def _action_text(self, state: ResultState) -> str:
+        if state == ResultState.OK:
+            return "OK"
+        if state == ResultState.NG:
+            return "NG"
+        return "PENDING"
+
+    def _action_color(self, state: ResultState) -> QColor:
+        if state == ResultState.OK:
+            return QColor(0, 255, 0)
+        if state == ResultState.NG:
+            return QColor(255, 0, 0)
+        return QColor(0, 0, 255)
 
     def draw_action_on_pixmap(self, pixmap, coord, text, color):
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
-        pen_det = QPen(color, 3)
-        font_det = QFont("Arial", 32)
-        painter.setFont(font_det)
-        painter.setPen(pen_det)
-
+        painter.setFont(QFont("Arial", 32))
+        painter.setPen(QPen(color, 3))
         painter.drawText(QPoint(coord[0], coord[1]), text)
         painter.end()
-
         return pixmap
 
     def draw_detection_on_image(self, frame_rgb, result, color):
-
-        # Step 1: 转为 QImage
-        h, w, ch = frame_rgb.shape
-        bytes_per_line = ch * w
-        qimg = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
-
-        # Step 2: 创建 QPixmap
+        owned_frame_rgb = copy_stable_frame(frame_rgb)
+        h, w, ch = owned_frame_rgb.shape
+        # QImage must own its bytes because drawing happens after this local buffer is gone.
+        qimg = QImage(owned_frame_rgb.tobytes(), w, h, ch * w, QImage.Format_RGB888).copy()
         pixmap = QPixmap.fromImage(qimg)
 
-        # Step 3: 用 QPainter 绘制
+        if result is None:
+            return pixmap
+
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
-
-        # 绘制 detection
-
+        painter.setFont(QFont("Arial", 32))
         pen_det = QPen(color, 3)
-        font_det = QFont("Arial", 32)
-        painter.setFont(font_det)
-
         names = result.names
 
         for box in result.boxes:
-            x1, y1, x2, y2 = (
-                int(box.x_min),
-                int(box.y_min),
-                int(box.x_max),
-                int(box.y_max),
-            )
+            x1, y1, x2, y2 = int(box.x_min), int(box.y_min), int(box.x_max), int(box.y_max)
             painter.setPen(pen_det)
             painter.drawRect(x1, y1, x2 - x1, y2 - y1)
-
-            label = names[box.id]
-            label = f"{label} {box.confidence:.2f}"
-            painter.drawText(QPoint(x1, y1 - 5), label)
+            painter.drawText(QPoint(x1, y1 - 5), f"{names[box.id]} {box.confidence:.2f}")
 
         painter.end()
-
         return pixmap
