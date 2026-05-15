@@ -455,6 +455,11 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         if self._next_output_sequence > self._sequence_index:
             return
 
+        if self._next_output_sequence == self._sequence_index:
+            if self._next_output_sequence not in self._records_by_sequence:
+                self._next_output_sequence = self._sequence_index + 1
+            return
+
         if self._next_output_sequence in self._records_by_sequence:
             return
 
@@ -626,11 +631,13 @@ class InnerScreenMicroscopicExaminationClient(QObject):
                 self._action_result_queue.append(self._current_action)
                 logger.debug(f"当前动作：{label}")
 
-        # Action results become meaningful only after one material clip ends.
+        # Action results become meaningful only after one material segment ends,
+        # and statistics are updated when the mold goes from present to absent.
         # If the result arrives earlier, keep it in the queue until the mold
-        # DISAPPEARING consumes it for statistics and UI output.
-        # 动作识别结果在物料片段结束后才有业务意义；模具从出现到消失时统计一次。
-        # 如果动作结果先于模具结束返回，暂存在队列中，等模具 DISAPPEARING 时消费。
+        # DISAPPEARING state consumes it for statistics and UI output.
+        # 动作识别结果只有在一个物料片段结束后才有业务意义，并且在模具从出现到
+        # 消失时更新统计；如果动作结果更早返回，就先暂存在队列中，等模具
+        # DISAPPEARING 状态消费它，再用于统计和界面输出。
         action_result = self._current_action
         if record.mold_transition_state == ObjectState.DISAPPEARING:
             action_result = self._dequeue_action_result()
