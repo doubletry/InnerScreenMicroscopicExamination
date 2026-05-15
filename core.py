@@ -182,7 +182,8 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._drain_timer.timeout.connect(self._on_drain_timer)
 
     def _request_timeout_seconds(self) -> float:
-        return self._settings.value("request_timeout_seconds", 3.0, type=float)
+        timeout_msecs = self._settings.value("request_timeout_msecs", 3000, type=int)
+        return timeout_msecs / 1000.0
 
     def _max_clip_frames(self) -> int:
         return self._settings.value("max_clip_frames", 24, type=int)
@@ -393,7 +394,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         material_box = self._box_from_area(material_area)
         result = self._first_detection_result(record)
         if result is None:
-            return self._material_tracker.disappear()
+            return self._material_tracker.state
 
         for box in result.boxes:
             if box.id not in [MATERIAL_EMPTY_BOX_ID, MATERIAL_PRESENT_BOX_ID]:
@@ -405,7 +406,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             if box.id == MATERIAL_EMPTY_BOX_ID:
                 return self._material_tracker.disappear()
 
-        return self._material_tracker.disappear()
+        return self._material_tracker.state
 
     def _submit_action_clip(self, record: FrameRecord, material_area):
         if not self._clip_buffer:

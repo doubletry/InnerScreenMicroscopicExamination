@@ -120,18 +120,18 @@ class ConfigurationPanel(QWidget):
 
         param_configuration_group_layout.addRow("保存片段", save_clip_checkbox)
 
-        request_timeout_input = QDoubleSpinBox()
-        request_timeout_input.setObjectName("request_timeout_seconds")
-        request_timeout_input.setRange(0.1, 60)
-        request_timeout_input.setSingleStep(0.1)
+        request_timeout_input = QSpinBox()
+        request_timeout_input.setObjectName("request_timeout_msecs")
+        request_timeout_input.setRange(100, 60000)
+        request_timeout_input.setSingleStep(100)
         request_timeout_input.setValue(
-            self.load_setting(request_timeout_input.objectName(), 3.0, float)
+            self.load_setting(request_timeout_input.objectName(), 3000, int)
         )
         request_timeout_input.valueChanged.connect(
             lambda value: self.save_setting(request_timeout_input.objectName(), value)
         )
         param_configuration_group_layout.addRow(
-            "请求超时时间（秒）：", request_timeout_input
+            "请求超时时间（毫秒）：", request_timeout_input
         )
 
         max_clip_frames_input = QSpinBox()
