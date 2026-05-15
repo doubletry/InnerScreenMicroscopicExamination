@@ -390,9 +390,8 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         return time.monotonic() - record.created_at >= self._request_timeout_seconds()
 
     def _is_action_expired(self, record: FrameRecord) -> bool:
-        if record.action_submitted_at is None:
-            return False
-        return time.monotonic() - record.action_submitted_at >= self._request_timeout_seconds()
+        action_started_at = record.action_submitted_at or record.created_at
+        return time.monotonic() - action_started_at >= self._request_timeout_seconds()
 
     def _drain_detection_in_order(self):
         """Process detection results strictly by sequence_index.
@@ -453,11 +452,25 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         缺口上，后续已完成的帧会被错误阻塞。这里只在序号已经出现过的前提下
         跨过缺口，避免把未来尚未进入流水线的帧误判为已跳过。
         """
-        while (
-            self._next_output_sequence <= self._sequence_index
-            and self._next_output_sequence not in self._records_by_sequence
-        ):
-            self._next_output_sequence += 1
+        if self._next_output_sequence > self._sequence_index:
+            return
+
+        if self._next_output_sequence in self._records_by_sequence:
+            return
+
+        next_available_sequence = min(
+            (
+                sequence_index
+                for sequence_index in self._records_by_sequence
+                if sequence_index >= self._next_output_sequence
+            ),
+            default=None,
+        )
+        self._next_output_sequence = (
+            next_available_sequence
+            if next_available_sequence is not None
+            else self._sequence_index + 1
+        )
 
     def _process_detection_record(self, record: FrameRecord):
         if record.detection_processed:
@@ -646,12 +659,13 @@ class InnerScreenMicroscopicExaminationClient(QObject):
                 "current_mold": record.mold_status,
             },
         }
+        emitted_action_result = action_result
         self.resultsReady.emit({"request_id": record.request_id, "resp": data})
 
         # record.pixmap 已包含检测框；这里仅叠加动作识别文字，保持绘制职责清晰。
         pixmap = record.pixmap or self.draw_detection_on_image(record.image, None, QColor(0, 0, 255))
-        color = self._action_color(action_result)
-        text = f"内屏镜检撕膜：{self._action_text(action_result)}, 亮度:{get_v_channel_brightness(record.image):.1f}"
+        color = self._action_color(emitted_action_result)
+        text = f"内屏镜检撕膜：{self._action_text(emitted_action_result)}, 亮度:{get_v_channel_brightness(record.image):.1f}"
         self.imageReady.emit(self.draw_action_on_pixmap(pixmap, (10, 50), text, color))
 
     def _dequeue_action_result(self) -> ResultState:
