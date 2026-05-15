@@ -93,6 +93,7 @@ class ActionClipBuffer:
             self.keys.popleft()
             self.images.popleft()
         self.keys.append(key)
+        # Clip saving runs on another thread, so keep a private frame copy.
         self.images.append((sequence_index, copy_stable_frame(image)))
 
     def keys_in_order(self) -> list[str]:
@@ -105,18 +106,18 @@ class ActionClipBuffer:
         return len(self.keys)
 
 
-def save_segments(images: list[tuple[int, np.ndarray]], roi, root):
+def save_segments(images: list[tuple[int, np.ndarray]], roi_points, root):
     dirname = secrets.token_hex(6)
     full_dirname = osp.join(root, dirname)
     os.makedirs(full_dirname, exist_ok=True)
 
     h, w = images[0][1].shape[:2] if images else (0, 0)
     xmin, xmax, ymin, ymax = 0, w, 0, h
-    if len(roi) >= 2:
-        xmin = min(roi[0][0], roi[1][0])
-        xmax = max(roi[0][0], roi[1][0])
-        ymin = min(roi[0][1], roi[1][1])
-        ymax = max(roi[0][1], roi[1][1])
+    if len(roi_points) >= 2:
+        xmin = min(roi_points[0][0], roi_points[1][0])
+        xmax = max(roi_points[0][0], roi_points[1][0])
+        ymin = min(roi_points[0][1], roi_points[1][1])
+        ymax = max(roi_points[0][1], roi_points[1][1])
 
     for sequence_index, image in images:
         # Zero-padding keeps filesystem order identical to frame order.
@@ -284,6 +285,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._records_by_sequence[record.sequence_index] = record
         self.results.setdefault(request_id, {})["image"] = owned_image
 
+        # Upload, record storage, and clip saving may outlive each other.
         upload_image = copy_stable_frame(owned_image)
         self.upload_image_client.add_input_item(
             {"request_id": request_id, "image": upload_image, "image_encode": image_encode}
@@ -447,7 +449,10 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
         if not face_a or not face_c:
             color = QColor(0, 0, 255)
-            state = self._mold_tracker.disappear() if not face_a and not face_c else self._mold_tracker.appear()
+            if not face_a and not face_c:
+                state = self._mold_tracker.disappear()
+            else:
+                state = self._mold_tracker.appear()
         elif face_a.y_min < face_c.y_min:
             color = QColor(255, 0, 0)
             state = self._mold_tracker.appear()
