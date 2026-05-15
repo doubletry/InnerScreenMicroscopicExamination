@@ -65,6 +65,11 @@ def compute_iou(box1, box2):
 class FrameRecord:
     """Complete context for one frame in the asynchronous pipeline.
 
+    Upload, detection, and action recognition are returned asynchronously by
+    different threads/services. sequence_index is the primary ordering key used
+    to keep the input frame, service responses, and final display result for the
+    same frame together before ordered processing.
+
     单帧在异步流水线中的完整上下文。
     上传、检测和动作识别分别由不同线程/服务异步返回。该对象以
     sequence_index 为主键把同一帧的输入、服务响应和最终显示结果集中管理，
@@ -91,6 +96,11 @@ class FrameRecord:
 
 class ActionClipBuffer:
     """Frame-ordered cache for one action-recognition clip.
+
+    Upload keys are cached in frame order while material remains present, then
+    submitted to VideoClassificationClient once the material explicitly
+    disappears. Image saving and service requests may be consumed on different
+    threads, so frame images are copied immediately when appended.
 
     动作识别片段缓存。
     物料持续出现期间按帧序缓存上传后的图片 key；物料明确消失时一次性提交给
@@ -369,6 +379,11 @@ class InnerScreenMicroscopicExaminationClient(QObject):
     def _drain_detection_in_order(self):
         """Process detection results strictly by sequence_index.
 
+        gRPC responses may arrive out of order, so this method only consumes
+        the frame pointed to by _next_detection_sequence. If that frame has no
+        detection result before the configured millisecond timeout, it is
+        skipped so later completed frames are not blocked forever.
+
         按 sequence_index 顺序处理检测结果。
         gRPC 响应可能乱序返回，因此这里只消费 _next_detection_sequence 指向的帧。
         如果该帧迟迟没有检测结果，则在毫秒级配置的超时时间后跳过它，避免后续
@@ -393,6 +408,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
     def _skip_record(self, record: FrameRecord, reason: str):
         """Drop an unusable frame and remove all indexes for late responses.
+
+        All indexes are cleaned synchronously so an old asynchronous response
+        cannot be matched again or emitted after this frame has been skipped.
 
         跳过无法继续处理的帧，并同步清理所有索引，防止旧响应再次参与输出。
         """
@@ -515,6 +533,12 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
     def _drain_ready_outputs(self):
         """Emit completed frame results in video-frame order.
+
+        The output stage also advances only the frame pointed to by
+        _next_output_sequence, keeping UI refreshes, statistics, and resultsReady
+        emissions aligned with the video timeline. If action recognition was
+        submitted but exceeds the configured timeout, the frame is emitted as
+        PENDING to avoid blocking screen refresh.
 
         按帧序输出已经准备好的结果。
         输出阶段同样只推进 _next_output_sequence 指向的帧，确保 UI、统计和外部
