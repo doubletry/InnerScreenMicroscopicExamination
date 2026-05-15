@@ -614,7 +614,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
                 logger.debug(f"当前动作：{label}")
 
         # Action results become meaningful only after one material clip ends.
-        # If the result arrives earlier, keep it in the queue until mold
+        # If the result arrives earlier, keep it in the queue until the mold
         # DISAPPEARING consumes it for statistics and UI output.
         # 动作识别结果在物料片段结束后才有业务意义；模具从出现到消失时统计一次。
         # 如果动作结果先于模具结束返回，暂存在队列中，等模具 DISAPPEARING 时消费。
