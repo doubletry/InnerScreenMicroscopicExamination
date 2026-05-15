@@ -74,7 +74,7 @@ def generate_random_str(length=10):
     return "".join(random.sample(chars, length))
 
 
-def copy_stable_frame(frame: np.ndarray, retries: int = 3, delay_seconds: float = 0.001):
+def copy_stable_frame(frame: np.ndarray):
     """立即复制帧，避免持有上游复用缓冲区。"""
     if frame is None:
         return None

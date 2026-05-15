@@ -23,7 +23,7 @@ from ._Sidebar import SidebarStatusWidget
 from ._util import get_package_name, get_v_channel_brightness
 from ._version import (__version__, compatibility, department, description,
                        organization, year)
-from .core import InnerScreenMicroscopicExaminationClient
+from .core import InnerScreenMicroscopicExaminationClient, copy_stable_frame
 
 current_file_path = os.path.abspath(__file__)  # 当前文件的绝对路径
 current_dir = os.path.dirname(current_file_path)  # 当前文件所在目录
@@ -402,7 +402,7 @@ class Plugin(PluginBase):
         if not self.start_action.isChecked():
             return
 
-        frame_data = np.array(frame_data, copy=True, order="C")
+        frame_data = copy_stable_frame(frame_data)
         if get_v_channel_brightness(frame_data) < self.settings.value(
             "brighten_conf", 64, type=int
         ):  # 如果画面过暗，可能是视频结束的黑屏，直接返回不处理
