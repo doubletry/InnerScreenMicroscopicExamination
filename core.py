@@ -26,6 +26,8 @@ from ._util import ObjectState, ResultState, StateTracker, get_v_channel_brightn
 IMAGE_MODEL_NAME = ""
 MOLD_DETECTION_MODEL_NAME = "上下模检测"
 ACTION_MODEL_NAME = "内屏镜检"
+MATERIAL_EMPTY_BOX_ID = 6
+MATERIAL_PRESENT_BOX_ID = 7
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -35,7 +37,7 @@ def get_machine_unique_id():
 
 
 def copy_stable_frame(frame: np.ndarray) -> np.ndarray:
-    """Return an owned C-contiguous copy of an RGB frame for async consumers."""
+    """Return an owned C-contiguous copy; callers provide RGB frame data."""
     return np.array(frame, copy=True, order="C")
 
 
@@ -108,7 +110,8 @@ def save_segments(images: list[tuple[int, np.ndarray]], roi, root):
     full_dirname = osp.join(root, dirname)
     os.makedirs(full_dirname, exist_ok=True)
 
-    xmin, xmax, ymin, ymax = 0, None, 0, None
+    h, w = images[0][1].shape[:2] if images else (0, 0)
+    xmin, xmax, ymin, ymax = 0, w, 0, h
     if len(roi) >= 2:
         xmin = min(roi[0][0], roi[1][0])
         xmax = max(roi[0][0], roi[1][0])
@@ -227,6 +230,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             return False
 
     def start(self):
+        if self.threads:
+            logger.warning(f"{self.__class__.__name__} 已启动，忽略重复启动")
+            return
         logger.info(f"启动 {self.__class__.__name__}")
         self.image_queue = queue.Queue(1000)
         self._clip_buffer = ActionClipBuffer(self._max_clip_frames())
@@ -259,6 +265,8 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         if self._save_segments_threading and self._save_segments_threading.is_alive():
             self.image_queue.put(None)
             self._save_segments_threading.join(timeout=5)
+            if self._save_segments_threading.is_alive():
+                logger.warning("保存结果线程未能在超时时间内退出")
 
     def handle_image(self, image, image_encode=None, request_id=None, timestamp=None):
         if request_id is None:
@@ -386,13 +394,13 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             return self._material_tracker.disappear()
 
         for box in result.boxes:
-            if box.id not in [6, 7]:
+            if box.id not in [MATERIAL_EMPTY_BOX_ID, MATERIAL_PRESENT_BOX_ID]:
                 continue
             if compute_iou([box.x_min, box.y_min, box.x_max, box.y_max], material_box) < 0.3:
                 continue
-            if box.id == 7:
+            if box.id == MATERIAL_PRESENT_BOX_ID:
                 return self._material_tracker.appear()
-            if box.id == 6:
+            if box.id == MATERIAL_EMPTY_BOX_ID:
                 return self._material_tracker.disappear()
 
         return self._material_tracker.disappear()
@@ -546,7 +554,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
     def _box_from_area(self, area):
         if len(area) < 2:
-            return []
+            return None
         return [
             min(area[0][0], area[1][0]),
             min(area[0][1], area[1][1]),
@@ -580,6 +588,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
     def draw_detection_on_image(self, frame_rgb, result, color):
         frame_rgb = copy_stable_frame(frame_rgb)
         h, w, ch = frame_rgb.shape
+        # QImage must own its bytes because drawing happens after this local buffer is gone.
         qimg = QImage(frame_rgb.tobytes(), w, h, ch * w, QImage.Format_RGB888).copy()
         pixmap = QPixmap.fromImage(qimg)
 

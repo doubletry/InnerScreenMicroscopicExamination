@@ -325,6 +325,7 @@ class Plugin(PluginBase):
         if not self.start_action.isChecked():
             return
 
+        # The host may reuse frame_data buffers after this slot returns.
         frame = copy_stable_frame(frame_data)
         if get_v_channel_brightness(frame) < self.settings.value(
             "brighten_conf", 64, type=int
