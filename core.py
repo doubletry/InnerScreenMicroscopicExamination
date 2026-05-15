@@ -37,7 +37,7 @@ def get_machine_unique_id():
 
 
 def copy_stable_frame(frame: np.ndarray) -> np.ndarray:
-    """Return an owned C-contiguous RGB frame copy.
+    """Return an owned C-contiguous RGB copy to avoid async buffer reuse issues.
 
     复制一份连续内存的 RGB 图像，避免上游复用帧缓冲区导致异步读写串帧。
     """
@@ -384,10 +384,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._drain_ready_outputs()
 
     def _is_expired(self, record: FrameRecord) -> bool:
-        return (
-            time.monotonic() - record.created_at
-            >= self._request_timeout_seconds()
-        )
+        return time.monotonic() - record.created_at >= self._request_timeout_seconds()
 
     def _drain_detection_in_order(self):
         """Process detection results strictly by sequence_index.
