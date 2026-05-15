@@ -140,12 +140,12 @@ class ActionClipBuffer:
 
 
 def save_segments(
-    images: list[tuple[int, np.ndarray]], roi_points: list[tuple[int, int]], root: str
+    images: list[tuple[int, np.ndarray]], material_area: list[tuple[int, int]], root: str
 ):
     """Save an action clip to disk in sequence_index order.
 
     按 sequence_index 顺序保存动作片段图片；文件名使用零填充序号，确保文件系统
-    排序与视频帧序一致。roi_points 为物料区域左上/右下点，root 为保存根目录。
+    排序与视频帧序一致。material_area 为物料区域左上/右下点，root 为保存根目录。
     """
     dirname = secrets.token_hex(6)
     full_dirname = osp.join(root, dirname)
@@ -153,11 +153,11 @@ def save_segments(
 
     h, w = images[0][1].shape[:2] if images else (0, 0)
     xmin, xmax, ymin, ymax = 0, w, 0, h
-    if len(roi_points) >= 2:
-        xmin = min(roi_points[0][0], roi_points[1][0])
-        xmax = max(roi_points[0][0], roi_points[1][0])
-        ymin = min(roi_points[0][1], roi_points[1][1])
-        ymax = max(roi_points[0][1], roi_points[1][1])
+    if len(material_area) >= 2:
+        xmin = min(material_area[0][0], material_area[1][0])
+        xmax = max(material_area[0][0], material_area[1][0])
+        ymin = min(material_area[0][1], material_area[1][1])
+        ymax = max(material_area[0][1], material_area[1][1])
 
     for sequence_index, image in images:
         # Zero-padding keeps filesystem order identical to frame order.
