@@ -444,6 +444,12 @@ class InnerScreenMicroscopicExaminationClient(QObject):
     def _advance_output_sequence_past_gaps(self):
         """Advance output cursor across already-removed sequence gaps.
 
+        Some frames may be removed early after timing out. If the output cursor
+        lands on one of those missing sequence numbers, later completed frames
+        would remain blocked. This helper only skips gaps whose sequence numbers
+        have already been seen, so future frames that have not entered the
+        pipeline yet are never treated as skipped.
+
         某些帧会因超时被跳过并提前从索引中删除；如果当前输出游标正好落在这些
         缺口上，后续已完成的帧会被错误阻塞。这里只在序号已经出现过的前提下
         跨过缺口，避免把未来尚未进入流水线的帧误判为已跳过。
