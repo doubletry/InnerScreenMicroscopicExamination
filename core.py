@@ -118,6 +118,11 @@ class ActionClipBuffer:
         self.frame_images.clear()
 
     def append(self, sequence_index: int, upload_key: str, image: np.ndarray):
+        """Append one uploaded frame to the clip in frame order.
+
+        sequence_index 用于保持片段帧序；upload_key 是服务端缓存图片的标识；
+        image 会在写入缓存时复制，供后续保存线程安全使用。
+        """
         if len(self.upload_keys) >= self.max_frames:
             self.upload_keys.popleft()
             self.frame_images.popleft()
@@ -134,7 +139,14 @@ class ActionClipBuffer:
         return len(self.upload_keys)
 
 
-def save_segments(images: list[tuple[int, np.ndarray]], roi_points, root):
+def save_segments(
+    images: list[tuple[int, np.ndarray]], roi_points: list[tuple[int, int]], root: str
+):
+    """Save an action clip to disk in sequence_index order.
+
+    按 sequence_index 顺序保存动作片段图片；文件名使用零填充序号，确保文件系统
+    排序与视频帧序一致。roi_points 为物料区域左上/右下点，root 为保存根目录。
+    """
     dirname = secrets.token_hex(6)
     full_dirname = osp.join(root, dirname)
     os.makedirs(full_dirname, exist_ok=True)
