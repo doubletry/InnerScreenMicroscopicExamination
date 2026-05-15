@@ -116,6 +116,7 @@ def save_segments(images: list[tuple[int, np.ndarray]], roi, root):
         ymax = max(roi[0][1], roi[1][1])
 
     for sequence_index, image in images:
+        # Zero-padding keeps filesystem order identical to frame order.
         image_path = osp.join(full_dirname, f"{sequence_index:08d}.jpg")
         image_bgr = cv2.cvtColor(copy_stable_frame(image), cv2.COLOR_RGB2BGR)
         cv2.imwrite(image_path, image_bgr[ymin:ymax, xmin:xmax])
@@ -235,7 +236,6 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._save_segments_threading = threading.Thread(
             target=backend_save_segments,
             args=(self.image_queue, osp.join(current_dir, "history")),
-            daemon=True,
         )
         self._save_segments_threading.start()
         self._drain_timer.start()
@@ -258,6 +258,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self.threads.clear()
         if self._save_segments_threading and self._save_segments_threading.is_alive():
             self.image_queue.put(None)
+            self._save_segments_threading.join(timeout=5)
 
     def handle_image(self, image, image_encode=None, request_id=None, timestamp=None):
         if request_id is None:
@@ -486,7 +487,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
         action_result = self._current_action
         if record.mold_transition_state == ObjectState.DISAPPEARING:
-            action_result = self._action_result_queue.popleft() if self._action_result_queue else ResultState.PENDING
+            action_result = self._dequeue_action_result()
             self._total_count += 1
             if action_result == ResultState.OK:
                 self._ok_count += 1
@@ -518,6 +519,11 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         color = self._action_color(self._current_action)
         text = f"内屏镜检撕膜：{self._action_text(self._current_action)}, 明度:{get_v_channel_brightness(record.image):.1f}"
         self.imageReady.emit(self.draw_action_on_pixmap(pixmap, (10, 50), text, color))
+
+    def _dequeue_action_result(self) -> ResultState:
+        if self._action_result_queue:
+            return self._action_result_queue.popleft()
+        return ResultState.PENDING
 
     def _first_detection_result(self, record: FrameRecord):
         if record.detection_resp is None or not getattr(record.detection_resp, "results", None):
