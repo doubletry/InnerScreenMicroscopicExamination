@@ -402,6 +402,7 @@ class Plugin(PluginBase):
         if not self.start_action.isChecked():
             return
 
+        frame_data = np.array(frame_data, copy=True, order="C")
         if get_v_channel_brightness(frame_data) < self.settings.value(
             "brighten_conf", 64, type=int
         ):  # 如果画面过暗，可能是视频结束的黑屏，直接返回不处理

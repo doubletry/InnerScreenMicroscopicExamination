@@ -75,19 +75,11 @@ def generate_random_str(length=10):
 
 
 def copy_stable_frame(frame: np.ndarray, retries: int = 3, delay_seconds: float = 0.001):
-    """复制帧并尽量避开上游复用缓冲区写入中的撕裂画面。"""
+    """立即复制帧，避免持有上游复用缓冲区。"""
     if frame is None:
         return None
 
-    previous = np.array(frame, copy=True)
-    for _ in range(max(1, retries)):
-        if delay_seconds > 0:
-            time.sleep(delay_seconds)
-        current = np.array(frame, copy=True)
-        if current.shape == previous.shape and np.array_equal(current, previous):
-            return current
-        previous = current
-    return previous.copy()
+    return np.array(frame, copy=True, order="C")
 
 
 def save_segments(images, roi, root):
