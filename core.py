@@ -121,7 +121,7 @@ class ActionClipBuffer:
         """Append one uploaded frame to the clip in frame order.
 
         sequence_index 用于保持片段帧序；upload_key 是服务端缓存图片的标识；
-        image 会在写入缓存时复制，供后续保存线程安全使用。
+        image 是当前帧的 RGB 图像数据。
         """
         if len(self.upload_keys) >= self.max_frames:
             self.upload_keys.popleft()
@@ -145,7 +145,8 @@ def save_segments(
     """Save an action clip to disk in sequence_index order.
 
     按 sequence_index 顺序保存动作片段图片；文件名使用零填充序号，确保文件系统
-    排序与视频帧序一致。material_area 为物料区域左上/右下点，root 为保存根目录。
+    排序与视频帧序一致。material_area 为物料区域左上/右下点；少于两个点时保存
+    完整画面；root 为保存根目录。
     """
     dirname = secrets.token_hex(6)
     full_dirname = osp.join(root, dirname)
