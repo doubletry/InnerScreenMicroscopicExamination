@@ -37,7 +37,10 @@ def get_machine_unique_id():
 
 
 def copy_stable_frame(frame: np.ndarray) -> np.ndarray:
-    """复制一份连续内存的 RGB 图像，避免上游复用帧缓冲区导致异步读写串帧。"""
+    """Return an owned C-contiguous RGB frame copy.
+
+    复制一份连续内存的 RGB 图像，避免上游复用帧缓冲区导致异步读写串帧。
+    """
     return np.array(frame, copy=True, order="C")
 
 
@@ -60,8 +63,9 @@ def compute_iou(box1, box2):
 
 @dataclass
 class FrameRecord:
-    """单帧在异步流水线中的完整上下文。
+    """Complete context for one frame in the asynchronous pipeline.
 
+    单帧在异步流水线中的完整上下文。
     上传、检测和动作识别分别由不同线程/服务异步返回。该对象以
     sequence_index 为主键把同一帧的输入、服务响应和最终显示结果集中管理，
     便于后续按帧序推进处理，避免服务响应先后顺序影响业务时序。
@@ -86,8 +90,9 @@ class FrameRecord:
 
 
 class ActionClipBuffer:
-    """动作识别片段缓存。
+    """Frame-ordered cache for one action-recognition clip.
 
+    动作识别片段缓存。
     物料持续出现期间按帧序缓存上传后的图片 key；物料明确消失时一次性提交给
     VideoClassificationClient。保存图片与服务请求可能在不同线程消费，因此缓存
     本地图片时立即复制，保证片段内容不受后续帧复用影响。
@@ -364,8 +369,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         )
 
     def _drain_detection_in_order(self):
-        """按 sequence_index 顺序处理检测结果。
+        """Process detection results strictly by sequence_index.
 
+        按 sequence_index 顺序处理检测结果。
         gRPC 响应可能乱序返回，因此这里只消费 _next_detection_sequence 指向的帧。
         如果该帧迟迟没有检测结果，则在毫秒级配置的超时时间后跳过它，避免后续
         已完成的帧被永久阻塞。
@@ -388,7 +394,10 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._drain_ready_outputs()
 
     def _skip_record(self, record: FrameRecord, reason: str):
-        """跳过无法继续处理的帧，并同步清理所有索引，防止旧响应再次参与输出。"""
+        """Drop an unusable frame and remove all indexes for late responses.
+
+        跳过无法继续处理的帧，并同步清理所有索引，防止旧响应再次参与输出。
+        """
         record.skipped = True
         logger.warning(
             f"跳过帧 seq={record.sequence_index}, request_id={record.request_id}: {reason}"
@@ -507,8 +516,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         return color, state
 
     def _drain_ready_outputs(self):
-        """按帧序输出已经准备好的结果。
+        """Emit completed frame results in video-frame order.
 
+        按帧序输出已经准备好的结果。
         输出阶段同样只推进 _next_output_sequence 指向的帧，确保 UI、统计和外部
         resultsReady 信号都按视频时间线发布。若动作识别已提交但超过配置时间仍
         未返回，则按 PENDING 输出，避免单次动作服务异常阻塞整个画面刷新。
