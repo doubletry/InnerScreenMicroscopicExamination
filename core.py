@@ -199,11 +199,9 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._drain_timer.setInterval(200)
         self._drain_timer.timeout.connect(self._on_drain_timer)
 
-    def _request_timeout_interval_seconds(self) -> float:
-        timeout_milliseconds = self._settings.value(
-            "request_timeout_msecs", 3000, type=int
-        )
-        return timeout_milliseconds / 1000.0
+    def _request_timeout_seconds(self) -> float:
+        timeout_msecs = self._settings.value("request_timeout_msecs", 3000, type=int)
+        return timeout_msecs / 1000.0
 
     def _max_clip_frames(self) -> int:
         return self._settings.value("max_clip_frames", 24, type=int)
@@ -365,7 +363,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
     def _is_expired(self, record: FrameRecord) -> bool:
         return (
             time.monotonic() - record.created_at
-            >= self._request_timeout_interval_seconds()
+            >= self._request_timeout_seconds()
         )
 
     def _drain_detection_in_order(self):
