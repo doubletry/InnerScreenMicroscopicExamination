@@ -453,11 +453,11 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         跨过缺口，避免把未来尚未进入流水线的帧误判为已跳过。
         """
         if self._next_output_sequence > self._sequence_index:
-            return
-
-        if self._next_output_sequence == self._sequence_index:
-            if self._next_output_sequence not in self._records_by_sequence:
-                self._next_output_sequence = self._sequence_index + 1
+            logger.warning(
+                "Output cursor exceeded received sequence range / "
+                f"输出游标超过已接收帧范围: next={self._next_output_sequence}, "
+                f"max_seen={self._sequence_index}"
+            )
             return
 
         if self._next_output_sequence in self._records_by_sequence:
