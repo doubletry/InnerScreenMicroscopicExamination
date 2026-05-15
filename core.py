@@ -381,12 +381,12 @@ class InnerScreenMicroscopicExaminationClient(QObject):
 
         gRPC responses may arrive out of order, so this method only consumes
         the frame pointed to by _next_detection_sequence. If that frame has no
-        detection result before the configured millisecond timeout, it is
-        skipped so later completed frames are not blocked forever.
+        detection result before the configured timeout, it is skipped so later
+        completed frames are not blocked forever.
 
         按 sequence_index 顺序处理检测结果。
         gRPC 响应可能乱序返回，因此这里只消费 _next_detection_sequence 指向的帧。
-        如果该帧迟迟没有检测结果，则在毫秒级配置的超时时间后跳过它，避免后续
+        如果该帧迟迟没有检测结果，则在配置的超时时间后跳过它，避免后续
         已完成的帧被永久阻塞。
         """
         while True:
