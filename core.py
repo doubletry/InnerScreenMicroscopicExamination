@@ -37,7 +37,7 @@ def get_machine_unique_id():
 
 
 def copy_stable_frame(frame: np.ndarray) -> np.ndarray:
-    """Return an owned C-contiguous copy; callers provide RGB frame data."""
+    """复制一份连续内存的 RGB 图像，避免上游复用帧缓冲区导致异步读写串帧。"""
     return np.array(frame, copy=True, order="C")
 
 
@@ -60,6 +60,13 @@ def compute_iou(box1, box2):
 
 @dataclass
 class FrameRecord:
+    """单帧在异步流水线中的完整上下文。
+
+    上传、检测和动作识别分别由不同线程/服务异步返回。该对象以
+    sequence_index 为主键把同一帧的输入、服务响应和最终显示结果集中管理，
+    便于后续按帧序推进处理，避免服务响应先后顺序影响业务时序。
+    """
+
     sequence_index: int
     request_id: str
     timestamp: Optional[float]
@@ -79,31 +86,37 @@ class FrameRecord:
 
 
 class ActionClipBuffer:
+    """动作识别片段缓存。
+
+    物料持续出现期间按帧序缓存上传后的图片 key；物料明确消失时一次性提交给
+    VideoClassificationClient。保存图片与服务请求可能在不同线程消费，因此缓存
+    本地图片时立即复制，保证片段内容不受后续帧复用影响。
+    """
+
     def __init__(self, max_frames: int):
         self.max_frames = max(1, max_frames)
-        self.keys: deque[str] = deque()
-        self.images: deque[tuple[int, np.ndarray]] = deque()
+        self.upload_keys: deque[str] = deque()
+        self.frame_images: deque[tuple[int, np.ndarray]] = deque()
 
     def clear(self):
-        self.keys.clear()
-        self.images.clear()
+        self.upload_keys.clear()
+        self.frame_images.clear()
 
-    def append(self, sequence_index: int, key: str, image: np.ndarray):
-        if len(self.keys) >= self.max_frames:
-            self.keys.popleft()
-            self.images.popleft()
-        self.keys.append(key)
-        # Clip saving runs on another thread, so keep a private frame copy.
-        self.images.append((sequence_index, copy_stable_frame(image)))
+    def append(self, sequence_index: int, upload_key: str, image: np.ndarray):
+        if len(self.upload_keys) >= self.max_frames:
+            self.upload_keys.popleft()
+            self.frame_images.popleft()
+        self.upload_keys.append(upload_key)
+        self.frame_images.append((sequence_index, copy_stable_frame(image)))
 
-    def keys_in_order(self) -> list[str]:
-        return list(self.keys)
+    def upload_keys_in_order(self) -> list[str]:
+        return list(self.upload_keys)
 
-    def images_in_order(self) -> list[tuple[int, np.ndarray]]:
-        return list(self.images)
+    def frame_images_in_order(self) -> list[tuple[int, np.ndarray]]:
+        return list(self.frame_images)
 
     def __len__(self):
-        return len(self.keys)
+        return len(self.upload_keys)
 
 
 def save_segments(images: list[tuple[int, np.ndarray]], roi_points, root):
@@ -181,9 +194,11 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._drain_timer.setInterval(200)
         self._drain_timer.timeout.connect(self._on_drain_timer)
 
-    def _request_timeout_seconds(self) -> float:
-        timeout_msecs = self._settings.value("request_timeout_msecs", 3000, type=int)
-        return timeout_msecs / 1000.0
+    def _request_timeout_interval_seconds(self) -> float:
+        timeout_milliseconds = self._settings.value(
+            "request_timeout_msecs", 3000, type=int
+        )
+        return timeout_milliseconds / 1000.0
 
     def _max_clip_frames(self) -> int:
         return self._settings.value("max_clip_frames", 24, type=int)
@@ -274,6 +289,8 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         if request_id is None:
             request_id = secrets.token_hex(4)
 
+        # 入口处立即获得独立帧副本：后续上传、检测、显示都以该记录为准，
+        # 不再直接引用宿主程序可能复用的帧缓冲区。
         owned_image = copy_stable_frame(image)
         self._sequence_index += 1
         record = FrameRecord(
@@ -286,7 +303,8 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._records_by_sequence[record.sequence_index] = record
         self.results.setdefault(request_id, {})["image"] = owned_image
 
-        # Upload, record storage, and clip saving may outlive each other.
+        # 上传线程和本地记录生命周期不同，上传前再复制一份，避免客户端内部异步
+        # 读取时与本地绘制/保存共享同一块 numpy 内存。
         upload_image = copy_stable_frame(owned_image)
         self.upload_image_client.add_input_item(
             {"request_id": request_id, "image": upload_image, "image_encode": image_encode}
@@ -340,9 +358,18 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._drain_ready_outputs()
 
     def _is_expired(self, record: FrameRecord) -> bool:
-        return time.monotonic() - record.created_at >= self._request_timeout_seconds()
+        return (
+            time.monotonic() - record.created_at
+            >= self._request_timeout_interval_seconds()
+        )
 
     def _drain_detection_in_order(self):
+        """按 sequence_index 顺序处理检测结果。
+
+        gRPC 响应可能乱序返回，因此这里只消费 _next_detection_sequence 指向的帧。
+        如果该帧迟迟没有检测结果，则在毫秒级配置的超时时间后跳过它，避免后续
+        已完成的帧被永久阻塞。
+        """
         while True:
             record = self._records_by_sequence.get(self._next_detection_sequence)
             if record is None:
@@ -361,6 +388,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self._drain_ready_outputs()
 
     def _skip_record(self, record: FrameRecord, reason: str):
+        """跳过无法继续处理的帧，并同步清理所有索引，防止旧响应再次参与输出。"""
         record.skipped = True
         logger.warning(
             f"跳过帧 seq={record.sequence_index}, request_id={record.request_id}: {reason}"
@@ -375,6 +403,8 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         if record.detection_processed:
             return
 
+        # 物料状态只依据有明确匹配的物料框推进；未匹配到物料框时保持原状态，
+        # 与重构前逻辑一致，避免因为某一帧漏检而过早提交动作识别请求。
         material_area = self._material_area(record.image)
         material_state = self._update_material_state(record, material_area)
         if material_state == ObjectState.APPEARED and record.upload_key:
@@ -383,6 +413,8 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             self._submit_action_clip(record, material_area)
             self._material_tracker.reset()
 
+        # 模具检测结果与动作识别结果最终都挂在同一 FrameRecord 上，后续统一按
+        # sequence_index 输出，保证 UI 显示和统计口径与视频时间线一致。
         color, mold_state = self._update_mold_state(record)
         record.mold_transition_state = mold_state
         record.mold_status = self._mold_status
@@ -413,11 +445,13 @@ class InnerScreenMicroscopicExaminationClient(QObject):
             self._clip_buffer.clear()
             return
 
-        keys = self._clip_buffer.keys_in_order()
+        # VideoClassificationClient 要求 key 顺序与视频片段帧序一致；这里直接使用
+        # ActionClipBuffer 中按 sequence_index 追加的顺序，不再受异步返回顺序影响。
+        upload_keys = self._clip_buffer.upload_keys_in_order()
         request = {
             "request_id": record.request_id,
-            "sequences_keys": [keys],
-            "sequences_rois": [[material_area for _ in keys]],
+            "sequences_keys": [upload_keys],
+            "sequences_rois": [[material_area for _ in upload_keys]],
         }
         self.action_client.add_input_item(request)
         record.action_submitted = True
@@ -425,7 +459,10 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         if self._settings.value("save_clip", False, type=bool):
             try:
                 self.image_queue.put_nowait(
-                    {"images": self._clip_buffer.images_in_order(), "roi": material_area}
+                    {
+                        "images": self._clip_buffer.frame_images_in_order(),
+                        "roi": material_area,
+                    }
                 )
             except queue.Full:
                 logger.exception("保存图片失败")
@@ -470,6 +507,12 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         return color, state
 
     def _drain_ready_outputs(self):
+        """按帧序输出已经准备好的结果。
+
+        输出阶段同样只推进 _next_output_sequence 指向的帧，确保 UI、统计和外部
+        resultsReady 信号都按视频时间线发布。若动作识别已提交但超过配置时间仍
+        未返回，则按 PENDING 输出，避免单次动作服务异常阻塞整个画面刷新。
+        """
         while True:
             record = self._records_by_sequence.get(self._next_output_sequence)
             if record is None:
@@ -499,6 +542,8 @@ class InnerScreenMicroscopicExaminationClient(QObject):
                 self._action_result_queue.append(self._current_action)
                 logger.debug(f"当前动作：{label}")
 
+        # 动作识别结果在物料片段结束后才有业务意义；模具从出现到消失时统计一次。
+        # 如果动作结果先于模具结束返回，暂存在队列中，等模具 DISAPPEARING 时消费。
         action_result = self._current_action
         if record.mold_transition_state == ObjectState.DISAPPEARING:
             action_result = self._dequeue_action_result()
@@ -529,6 +574,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         }
         self.resultsReady.emit({"request_id": record.request_id, "resp": data})
 
+        # record.pixmap 已包含检测框；这里仅叠加动作识别文字，保持绘制职责清晰。
         pixmap = record.pixmap or self.draw_detection_on_image(record.image, None, QColor(0, 0, 255))
         color = self._action_color(self._current_action)
         text = f"内屏镜检撕膜：{self._action_text(self._current_action)}, 明度:{get_v_channel_brightness(record.image):.1f}"
