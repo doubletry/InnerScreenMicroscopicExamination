@@ -140,16 +140,16 @@ class ActionClipBuffer:
 
 
 def save_segments(
-    images: list[tuple[int, np.ndarray]], material_area: list[tuple[int, int]], root: str
+    images: list[tuple[int, np.ndarray]], material_area: list[tuple[int, int]], root_dir: str
 ):
     """Save an action clip to disk in sequence_index order.
 
     按 sequence_index 顺序保存动作片段图片；文件名使用零填充序号，确保文件系统
     排序与视频帧序一致。material_area 为物料区域点列表，裁剪时使用前两个点；
-    少于两个点时保存完整画面；root 为保存根目录。
+    少于两个点时保存完整画面；root_dir 为保存根目录。
     """
     dirname = secrets.token_hex(6)
-    full_dirname = osp.join(root, dirname)
+    full_dirname = osp.join(root_dir, dirname)
     os.makedirs(full_dirname, exist_ok=True)
 
     h, w = images[0][1].shape[:2] if images else (0, 0)
