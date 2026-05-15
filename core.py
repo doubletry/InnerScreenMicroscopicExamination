@@ -145,8 +145,8 @@ def save_segments(
     """Save an action clip to disk in sequence_index order.
 
     按 sequence_index 顺序保存动作片段图片；文件名使用零填充序号，确保文件系统
-    排序与视频帧序一致。material_area 为物料区域左上/右下点；少于两个点时保存
-    完整画面；root 为保存根目录。
+    排序与视频帧序一致。material_area 为物料区域点列表，裁剪时使用前两个点；
+    少于两个点时保存完整画面；root 为保存根目录。
     """
     dirname = secrets.token_hex(6)
     full_dirname = osp.join(root, dirname)
