@@ -7,7 +7,7 @@ import time
 import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -60,18 +60,18 @@ def compute_iou(box1, box2):
 class FrameRecord:
     sequence_index: int
     request_id: str
-    timestamp: float | None
+    timestamp: Optional[float]
     image: np.ndarray
     created_at: float = field(default_factory=time.monotonic)
     upload_resp: Any = None
-    upload_key: str | None = None
+    upload_key: Optional[str] = None
     detection_resp: Any = None
     action_resp: Any = None
     action_submitted: bool = False
     detection_processed: bool = False
     output_ready: bool = False
     skipped: bool = False
-    pixmap: QPixmap | None = None
+    pixmap: Optional[QPixmap] = None
     mold_transition_state: ObjectState = ObjectState.DISAPPEARED
     mold_status: ResultState = ResultState.PENDING
 
@@ -97,7 +97,7 @@ class ActionClipBuffer:
         return list(self.keys)
 
     def images_in_order(self) -> list[tuple[int, np.ndarray]]:
-        return [(seq, copy_stable_frame(image)) for seq, image in self.images]
+        return list(self.images)
 
     def __len__(self):
         return len(self.keys)
@@ -155,7 +155,7 @@ class InnerScreenMicroscopicExaminationClient(QObject):
         self.results = OrderedDict()
         self.threads: list[tuple[QThread, ClientBase]] = []
         self.image_queue = queue.Queue(1000)
-        self._save_segments_threading: threading.Thread | None = None
+        self._save_segments_threading: Optional[threading.Thread] = None
 
         self._sequence_index = -1
         self._records_by_request_id: dict[str, FrameRecord] = {}
